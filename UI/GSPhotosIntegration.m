@@ -48,7 +48,7 @@ static void GSCaptureSynchronizer(id object){
  dispatch_async(dispatch_get_main_queue(),^{GSFlushRefresh();});
 }
 static BOOL GSHasConfirmedOriginal(id controller){
- if(!GSNativeRoutingEnabled()||!GSMethod(controller,@"isBackedUp","B16@0:8")||!((BOOL(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"isBackedUp")))return NO;
+ if(!GSMethod(controller,@"isBackedUp","B16@0:8")||!((BOOL(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"isBackedUp")))return NO;
  id photo=GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto");
  if(![photo isKindOfClass:NSClassFromString(@"PHSServerPhoto")]||!GSMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSMethod(photo,@"storagePolicy","C16@0:8")||!GSMethod(photo,@"isPartialBackup","B16@0:8"))return NO;
  unsigned char originals=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"hasOriginalBytes"));
