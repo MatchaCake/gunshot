@@ -7,10 +7,8 @@
 #import "../UI/GSPhotosIntegration.h"
 #import <objc/runtime.h>
 #include <assert.h>
-static BOOL enabled=YES;
 static NSString *viewingAccount=@"current";
 BOOL GSIsGooglePhotos(void){return YES;}
-BOOL GSNativeRoutingEnabled(void){return enabled;}
 BOOL GSNativeAccountMatches(id account){assert(NSThread.isMainThread);return [viewingAccount isEqual:account];}
 @interface FixtureBundle : NSBundle @end
 @implementation FixtureBundle
@@ -96,7 +94,8 @@ int main(void){@autoreleasepool{
  }
  photo.hasOriginalBytes=1;photo.isPartialBackup=YES;assert([details getBackupStatusModelData]==details.original);
  photo.isPartialBackup=NO;details.isBackedUp=NO;assert([details getBackupStatusModelData]==details.original);
- details.isBackedUp=YES;enabled=NO;assert([details getBackupStatusModelData]==details.original);enabled=YES;
+ // Server-confirmed originals correct the label without the backup-routing toggle or its symbols.
+ details.isBackedUp=YES;assert([details getBackupStatusModelData]!=details.original);
  photo.storagePolicy=2;assert([details getBackupStatusModelData]==details.original);photo.storagePolicy=1;
  assert([details.original.backupStatusSubtitle isEqual:@"保存容量の節約"]); // No mutation of native state.
 #ifdef GS_TEST_LEGACY
