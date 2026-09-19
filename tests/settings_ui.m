@@ -27,7 +27,10 @@ static atomic_int FixtureConcurrent=2;
 @property(nonatomic,strong) UIAlertController *valueSheet;
 @end
 @implementation GSFixtureRetryPanel
-- (void)sheet:(UIAlertController *)sheet{self.valueSheet=sheet;}
+- (void)presentViewController:(UIViewController *)vc animated:(BOOL)flag completion:(void (^)(void))completion{
+ if([vc isKindOfClass:UIAlertController.class]){self.valueSheet=(UIAlertController *)vc;return;}
+ [super presentViewController:vc animated:flag completion:completion];
+}
 @end
 static NSUInteger NativeRefreshes;
 void GSRefreshNativeLibrary(void){dispatch_async(dispatch_get_main_queue(),^{NativeRefreshes++;});}
@@ -156,10 +159,44 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   if(![[NSSet setWithArray:runtime.allKeys]isSubsetOfSet:allowed]){Finish(NO,@"unexpected diagnostic fields");return;}
   GSPanel *panel=Panel(root);if([panel.tableView numberOfSections]!=8||[panel.tableView numberOfRowsInSection:6]!=3){Finish(NO,@"settings sections or appearance rows incorrect");return;}
   GSFixtureRetryPanel *retryPanel=[GSFixtureRetryPanel new];retryPanel.settingsMode=YES;
-  [retryPanel setValue:[@{@"retries":@7}mutableCopy] forKey:@"options"];
+  [retryPanel setValue:[@{@"retries":@7,@"concurrent":@2,@"quality":@"original"}mutableCopy] forKey:@"options"];
+  retryPanel.view.frame=CGRectMake(0,0,390,844);
+  [retryPanel.tableView reloadData];[retryPanel.tableView layoutIfNeeded];
   UITableViewCell *retry=[retryPanel tableView:panel.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:2 inSection:2]];
   [retryPanel chooseValueForControl:2];
   if(![retry.detailTextLabel.text isEqual:@"7 回"]||![retryPanel.valueSheet.actions[7].title isEqual:@"✓ 7 回"]){Finish(NO,@"Japanese retry setting must use the protocol key for display and selection");return;}
+  // Issue #50: Liquid Glass action sheets must anchor to the tapped row, not a fixed top offset.
+  NSIndexPath *retryPath=[NSIndexPath indexPathForRow:2 inSection:2];
+  [retryPanel.tableView scrollToRowAtIndexPath:retryPath atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
+  [retryPanel.tableView layoutIfNeeded];
+  [retryPanel tableView:retryPanel.tableView didSelectRowAtIndexPath:retryPath];
+  UIAlertController *retrySheet=retryPanel.valueSheet;
+  UIPopoverPresentationController *retryPopover=retrySheet.popoverPresentationController;
+  UITableViewCell *retryCell=[retryPanel.tableView cellForRowAtIndexPath:retryPath];
+  if(!retrySheet||retrySheet.actions.count<11){Finish(NO,@"retry sheet missing after row selection");return;}
+  if(retryCell){
+   if(retryPopover.sourceView!=retryCell||!CGRectEqualToRect(retryPopover.sourceRect,retryCell.bounds)){Finish(NO,@"sheet must anchor to the tapped cell");return;}
+  }else{
+   CGRect row=[retryPanel.tableView rectForRowAtIndexPath:retryPath];
+   if(retryPopover.sourceView!=retryPanel.tableView){Finish(NO,@"sheet must fall back to the table row, not a fixed top offset");return;}
+   if(fabs(CGRectGetMidX(retryPopover.sourceRect)-CGRectGetMidX(row))>1||fabs(CGRectGetMaxY(retryPopover.sourceRect)-(CGRectGetMaxY(row)-2))>1){Finish(NO,@"sheet sourceRect must match the selected row");return;}
+  }
+  if(retryPopover.sourceView==retryPanel.view&&fabs(retryPopover.sourceRect.origin.y-80)<1){Finish(NO,@"sheet must not use the hardcoded y=80 anchor");return;}
+  NSIndexPath *languagePath=[NSIndexPath indexPathForRow:0 inSection:6];
+  [retryPanel.tableView scrollToRowAtIndexPath:languagePath atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
+  [retryPanel.tableView layoutIfNeeded];
+  [retryPanel tableView:retryPanel.tableView didSelectRowAtIndexPath:languagePath];
+  UIAlertController *languageSheet=retryPanel.valueSheet;
+  UIPopoverPresentationController *languagePopover=languageSheet.popoverPresentationController;
+  UITableViewCell *languageCell=[retryPanel.tableView cellForRowAtIndexPath:languagePath];
+  if(languageSheet.actions.count!=6){Finish(NO,@"language sheet must list five languages plus cancel");return;}
+  if(languageCell){
+   if(languagePopover.sourceView!=languageCell||!CGRectEqualToRect(languagePopover.sourceRect,languageCell.bounds)){Finish(NO,@"language sheet must anchor to the tapped cell");return;}
+  }else{
+   CGRect row=[retryPanel.tableView rectForRowAtIndexPath:languagePath];
+   if(languagePopover.sourceView!=retryPanel.tableView||fabs(CGRectGetMaxY(languagePopover.sourceRect)-(CGRectGetMaxY(row)-2))>1){Finish(NO,@"language sheet must anchor to the selected row");return;}
+  }
+  if(languagePopover.sourceView==retryPanel.view&&fabs(languagePopover.sourceRect.origin.y-80)<1){Finish(NO,@"language sheet must not use the hardcoded y=80 anchor");return;}
   Capture(self.window,@"settings-light.png");
   GSSetLanguage(@"en");[panel viewWillAppear:NO];
   GSPanel *uploads=[[GSPanel alloc]initWithStyle:UITableViewStyleInsetGrouped];

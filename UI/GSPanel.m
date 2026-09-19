@@ -44,6 +44,7 @@
 @property(nonatomic,copy) void (^activityCompletion)(void);
 @property(nonatomic,copy) NSString *statusText;
 @property(nonatomic,copy) NSString *statusLanguage;
+@property(nonatomic,strong) NSIndexPath *sheetSourcePath;
 @end
 @implementation GSPanel
 - (void)viewDidLoad{
@@ -115,10 +116,11 @@
 }
 - (void)message:(NSString *)message{
  BOOL changed=![self.statusText isEqual:message]||![self.statusLanguage isEqual:GSLanguage()];
- self.statusText=message;self.statusLanguage=GSLanguage();if(changed)[self reloadTablePreservingPosition];
+ self.statusText=message;self.statusLanguage=GSLanguage();if(changed&&!self.presentedViewController)[self reloadTablePreservingPosition];
 }
 - (void)refresh{
- if(self.busy||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable])return;self.refreshing=YES;
+ // Presented sheets keep their popover anchor; reloading the table under them can drop the source view (issue #50).
+ if(self.busy||self.refreshing||self.nativeAuthorizationFailed||[self isInteractingWithTable]||self.presentedViewController)return;self.refreshing=YES;
  NSUInteger generation=self.stateGeneration;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
  NSError *error=nil;NSDictionary *accounts=GSRequest(@{@"op":@"accounts"},&error);NSDictionary *options=accounts?GSRequest(@{@"op":@"options"},&error):nil;
@@ -155,7 +157,7 @@
  self.statusText=[accounts[@"selected"]length]?[NSString stringWithFormat:@"%@ · %@",authorization,readiness]:GSL(@"Connect an account to continue");
  NSString *importError=GSNativeRoutingSnapshot()[@"lastError"];if(importError)self.statusText=importError;self.statusLanguage=GSLanguage();
  NSDictionary *batch=GSBatchImportSnapshot();if([batch[@"total"]unsignedIntegerValue])self.statusText=[self.statusText stringByAppendingFormat:@"\n%@",[self batchStatus:batch]];
- if(changed||![previousStatus isEqual:self.statusText]||![previousLanguage isEqual:self.statusLanguage])[self reloadTablePreservingPosition];
+ if((changed||![previousStatus isEqual:self.statusText]||![previousLanguage isEqual:self.statusLanguage])&&!self.presentedViewController)[self reloadTablePreservingPosition];
  });
  });
 }
@@ -292,7 +294,30 @@
  if(self.busy)return;self.stateGeneration++;self.busy=YES;[self message:GSL(@"Applying settings…")];self.navigationItem.rightBarButtonItem.enabled=NO;
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{NSError *error=nil;GSRequest(request,&error);dispatch_async(dispatch_get_main_queue(),^{self.busy=NO;self.navigationItem.rightBarButtonItem.enabled=YES;if(error)[self message:error.localizedDescription];else[self refresh];});});
 }
-- (void)sheet:(UIAlertController *)sheet{sheet.popoverPresentationController.sourceView=self.view;sheet.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2,80,1,1);[self presentViewController:sheet animated:YES completion:nil];}
+- (BOOL)isValidSheetAnchorPath:(NSIndexPath *)path{
+ if(!path)return NO;
+ NSInteger sections=self.tableView.numberOfSections;
+ if(path.section<0||path.section>=sections||path.row<0)return NO;
+ return path.row<[self.tableView numberOfRowsInSection:path.section];
+}
+- (void)configureSheetPopover:(UIViewController *)controller{
+ UIPopoverPresentationController *popover=controller.popoverPresentationController;if(!popover)return;
+ // iOS 26/27 Liquid Glass anchors action sheets to sourceView/sourceRect. A fixed top
+ // offset made menus appear above the tapped row and let tall sheets (Language) fail to show.
+ UIView *source=nil;CGRect rect=CGRectZero;NSIndexPath *path=self.sheetSourcePath;
+ if([self isValidSheetAnchorPath:path]){
+  UITableViewCell *cell=[self.tableView cellForRowAtIndexPath:path];
+  if(cell){source=cell;rect=cell.bounds;}
+  else{CGRect row=[self.tableView rectForRowAtIndexPath:path];if(!CGRectIsNull(row)&&!CGRectIsEmpty(row)&&CGRectGetHeight(row)>1){source=self.tableView;rect=CGRectMake(CGRectGetMidX(row),CGRectGetMaxY(row)-2,1,1);}}
+ }
+ if(!source||CGRectIsEmpty(rect)||CGRectIsNull(rect)){
+  source=self.tableView;CGRect bounds=source.bounds;
+  if(CGRectIsEmpty(bounds)||CGRectIsNull(bounds)){source=self.view;bounds=self.view.bounds;}
+  rect=CGRectMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds),1,1);
+ }
+ popover.sourceView=source;popover.sourceRect=rect;popover.permittedArrowDirections=UIPopoverArrowDirectionAny;
+}
+- (void)sheet:(UIAlertController *)sheet{[self configureSheetPopover:sheet];[self presentViewController:sheet animated:YES completion:nil];}
 - (void)primary{if(self.busy)return;if(self.settingsMode)[self addAccount];else if(self.sharedItems.count){NSArray *items=self.sharedItems;self.sharedItems=nil;if([items.firstObject isKindOfClass:PHAsset.class])[self importAssets:items];else[self importURLs:items];}else[self choose];}
 - (void)connectNativeAccount{
  NSDictionary *account=GSNativeAccountSummary();
@@ -340,7 +365,7 @@
  NSURL *file=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"gotohp-upload-diagnostics.json"]];
  if(!json||![json writeToURL:file options:NSDataWritingAtomic error:nil]){[self message:GSL(@"Could not export diagnostics.")];return;}
  UIActivityViewController *share=[[UIActivityViewController alloc]initWithActivityItems:@[file] applicationActivities:nil];
- share.popoverPresentationController.sourceView=self.view;share.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2,80,1,1);
+ [self configureSheetPopover:share];
  [self presentViewController:share animated:YES completion:nil];
 }
 - (void)toggleNativeRouting{
@@ -360,6 +385,7 @@
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)path{
  [tableView deselectRowAtIndexPath:path animated:YES];
+ self.sheetSourcePath=path;
  NSInteger control=[self controlAtPath:path];
  if(control==12){[self exportUploadDiagnostics];return;}
  if(control==16||control==19)return;
