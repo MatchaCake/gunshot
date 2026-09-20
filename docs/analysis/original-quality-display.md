@@ -40,7 +40,9 @@ Pixel 系アップロードでは hasOriginalBytes=Yes でも storagePolicy が 
 （v0.2.4 で serverOriginal は計上されるのに補正が発生しない）。
 hasOriginalBytes はサーバー自身の原本モデルであり、storagePolicy は容量課金の
 ポリシーです。判定は原本モデルだけに依存し、観測した storagePolicy 値は
-serverStoragePolicy&lt;N&gt; として診断に記録します。
+serverStoragePolicy&lt;N&gt; として診断に記録します。storagePolicy は任意の診断用 API
+であり、selector が存在しない場合や型が一致しない場合も、原本情報の ABI が
+一致すれば表示補正を行います。バージョン番号は動作条件に使いません。
 
 バックアップ連携（純正バックアップの GoToHP 経由）の有効・無効は表示補正に
 影響しません。判定はサーバーが返す原本情報だけに依存するため、GoToHP 画面や
@@ -62,14 +64,13 @@ No / Unknown / Maybe、未バックアップ、部分バックアップは変更
 アカウントごとに最新の 1 個だけを保持し、新しい観測で置き換えます。純正
 データベースやバックアップ状態への書き込みは引き続き行いません。
 
-また、表示中アカウントの純正 fetchData が進行した場合、待機中の要求と同じ
-サーバー状態を読むため、要求は充足として扱い、重複した fetch は発行しません
-（syncCoveredByNativeFetch として計上）。fetchDataSoft は完全なサーバー読取の
-保証がないため充足とは見なしません。
+純正 fetchData / fetchDataSoft の呼び出しは、同期完了やサーバー側の反映を
+保証しないため、待機中の要求を取り消しません。1 秒後の合流済み要求を維持します。
+同期は accountID と fetchData の ABI で判定し、fetchDataSoft の hook は任意です。
 
 ## 診断
 
-- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数、純正 fetch による充足件数（syncCoveredByNativeFetch）、同期オブジェクト待ち件数（syncWaitingForAccount）。
+- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数、同期オブジェクト待ち件数（syncWaitingForAccount）。
 - completionMonitor.uploadSummary（jailed では runtime.uploadSummary にも表示）: デフォルト画質、各ジョブの画質別・状態別件数と対応 profile、完了 revision。
 - uploadSummary の profile は送信ポリシーです。実メディアのサーバー側品質を一括で検証した意味ではありません。
 - アカウント、ファイル名、mediaKey、ハッシュ、トークンは追加診断に含めません。

@@ -10,7 +10,7 @@
 - (instancetype)initWithBackupStatus:(NSString *)status backupStatusSubtitle:(NSString *)subtitle learnMoreLink:(NSString *)link;
 @end
 
-// Exact, version-specific metadata. Never set backup flags or edit the native database.
+// Exact runtime ABI checks. Never set backup flags or edit the native database.
 static NSObject *GSLock;
 static NSMapTable *GSSynchronizers;
 static NSMutableDictionary *GSCounts;
@@ -42,22 +42,18 @@ void GSRefreshNativeLibrary(void){
  if(!GSSyncAvailable)return;
  dispatch_async(dispatch_get_main_queue(),^{GSPending=YES;GSFlushRefresh();});
 }
-static void GSCaptureSynchronizer(id object,BOOL covers){
+static void GSCaptureSynchronizer(id object){
  id account=GSGet(object,@"accountID");if(!account)return;
  // The app releases synchronizers between its own syncs, so only the newest
  // capture per account is kept alive as the entry into the app's sync queue.
  @synchronized(GSLock){[GSSynchronizers setObject:object forKey:account];}
- dispatch_async(dispatch_get_main_queue(),^{
-  // A native fetchData for the viewing account reads the same server state a
-  // pending refresh would request; the request is covered, not duplicated.
-  if(covers&&GSPending&&GSNativeAccountMatches(account)){GSPending=NO;GSCount(@"syncCoveredByNativeFetch");return;}
-  GSFlushRefresh();
- });
+ // Fetch entry is not completion; keep the coalesced refresh pending.
+ dispatch_async(dispatch_get_main_queue(),^{GSFlushRefresh();});
 }
 static BOOL GSHasConfirmedOriginal(id controller){
  if(!GSMethod(controller,@"isBackedUp","B16@0:8")||!((BOOL(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"isBackedUp")))return NO;
  id photo=GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto");
- if(![photo isKindOfClass:NSClassFromString(@"PHSServerPhoto")]||!GSMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSMethod(photo,@"storagePolicy","C16@0:8")||!GSMethod(photo,@"isPartialBackup","B16@0:8"))return NO;
+ if(![photo isKindOfClass:NSClassFromString(@"PHSServerPhoto")]||!GSMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSMethod(photo,@"isPartialBackup","B16@0:8"))return NO;
  unsigned char originals=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"hasOriginalBytes"));
  // Enum descriptor: Unknown=0, Yes=1, No=2, Maybe=3. Maybe is not Yes.
  GSCount(originals==1?@"serverOriginal":originals==2?@"serverNotOriginal":@"serverOriginalUnknown");
@@ -65,8 +61,10 @@ static BOOL GSHasConfirmedOriginal(id controller){
  // hasOriginalBytes is the server's own original-bytes model. Quota-free Pixel
  // uploads report Yes with a non-Standard storagePolicy, so the policy value is
  // recorded for diagnostics but does not gate the correction.
- unsigned char policy=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"storagePolicy"));
- GSCount([NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy]);
+ if(GSMethod(photo,@"storagePolicy","C16@0:8")){
+  unsigned char policy=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"storagePolicy"));
+  GSCount([NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy]);
+ }
  return YES;
 }
 // 7.20.2 builds a native label/image content model instead of BackupStatusData.
@@ -91,8 +89,7 @@ void GSInstallPhotosIntegration(void){
  Method account=class_getInstanceMethod(sync,NSSelectorFromString(@"accountID"));
  if(fetch&&account&&!strcmp(method_getTypeEncoding(fetch),"v16@0:8")&&!strcmp(method_getTypeEncoding(account),"@16@0:8")){
   for(NSString *name in @[@"fetchData",@"fetchDataSoft"]){SEL s=NSSelectorFromString(name);Method m=class_getInstanceMethod(sync,s);if(!m||strcmp(method_getTypeEncoding(m),"v16@0:8"))continue;
-   BOOL covers=[name isEqual:@"fetchData"]; // A soft fetch is not proof of a full server read.
-   IMP old=method_getImplementation(m);method_setImplementation(m,imp_implementationWithBlock(^(id object){GSCaptureSynchronizer(object,covers);((void(*)(id,SEL))old)(object,s);}));
+   IMP old=method_getImplementation(m);method_setImplementation(m,imp_implementationWithBlock(^(id object){GSCaptureSynchronizer(object);((void(*)(id,SEL))old)(object,s);}));
   }
   GSSyncAvailable=YES;
  }

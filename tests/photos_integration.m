@@ -27,10 +27,19 @@ static id Bundle(id object,SEL selector){return [FixtureBundle new];}
 @end
 @interface PHSServerPhoto : NSObject
 @property(nonatomic) unsigned char hasOriginalBytes;
-@property(nonatomic) unsigned char storagePolicy;
 @property(nonatomic) _Bool isPartialBackup;
 @end
 @implementation PHSServerPhoto @end
+@interface PhotoWithStoragePolicy : PHSServerPhoto
+@property(nonatomic) unsigned char storagePolicy;
+@end
+@implementation PhotoWithStoragePolicy @end
+@interface PhotoWithIncompatibleStoragePolicy : PHSServerPhoto
+- (id)storagePolicy;
+@end
+@implementation PhotoWithIncompatibleStoragePolicy
+- (id)storagePolicy{assert(0 && "Incompatible diagnostic ABI must not be called");return nil;}
+@end
 @interface ExtendedPhoto : NSObject
 @property(nonatomic,strong) PHSServerPhoto *serverPhoto;
 @end
@@ -88,7 +97,7 @@ int main(void){@autoreleasepool{
  GSInstallPhotosIntegration();assert([GSPhotosIntegrationSnapshot()[@"qualityAvailable"]boolValue]&&[GSPhotosIntegrationSnapshot()[@"syncAvailable"]boolValue]);
  PHSOneUpInfoPanelDetailsViewController *details=[PHSOneUpInfoPanelDetailsViewController new];details.isBackedUp=YES;
  details.original=[[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:@"保存容量を使用しません" backupStatusSubtitle:@"保存容量の節約" learnMoreLink:@"native-link"];
- details.extendedPhoto=[ExtendedPhoto new];PHSServerPhoto *photo=[PHSServerPhoto new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
+ details.extendedPhoto=[ExtendedPhoto new];PhotoWithStoragePolicy *photo=[PhotoWithStoragePolicy new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
  for(unsigned char value=0;value<4;value++){
   photo.hasOriginalBytes=value;id result=[details getBackupStatusModelData];
   if(value==1){assert(result!=details.original);assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);assert([[result backupStatus]isEqual:details.original.backupStatus]);}
@@ -108,6 +117,22 @@ int main(void){@autoreleasepool{
   assert([GSPhotosIntegrationSnapshot()[policyKey]unsignedIntegerValue]>=1);
  }
  photo.storagePolicy=1;
+ // Optional diagnostics must not gate quality correction or call an unknown ABI.
+ for(PHSServerPhoto *optional in @[[PHSServerPhoto new],[PhotoWithIncompatibleStoragePolicy new]]){
+  optional.hasOriginalBytes=1;details.extendedPhoto.serverPhoto=optional;
+  NSDictionary *before=GSPhotosIntegrationSnapshot();
+  id result=[details getBackupStatusModelData];
+  assert(result!=details.original);
+  assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);
+  assert([[result backupStatus]isEqual:details.original.backupStatus]);
+  for(unsigned char policy=0;policy<4;policy++){
+   NSString *key=[NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy];
+   assert([before[key]isEqual:GSPhotosIntegrationSnapshot()[key]]);
+  }
+  optional.isPartialBackup=YES;assert([details getBackupStatusModelData]==details.original);
+  optional.isPartialBackup=NO;optional.hasOriginalBytes=2;assert([details getBackupStatusModelData]==details.original);
+ }
+ details.extendedPhoto.serverPhoto=photo;
  assert([details.original.backupStatusSubtitle isEqual:@"保存容量の節約"]); // No mutation of native state.
 #ifdef GS_TEST_LEGACY
  assert([details contentViewModelWithTitle:details.original.backupStatus subtitle:details.original.backupStatusSubtitle subtitleContainsHTML:YES image:@"native-icon"]==details.original);
@@ -121,23 +146,19 @@ int main(void){@autoreleasepool{
  Drain(^BOOL{return current.fetches==2;});assert(other.fetches==1); // Coalesced and account-bound.
  viewingAccount=@"other";GSRefreshNativeLibrary();Drain(^BOOL{return other.fetches==2;});assert(current.fetches==2);
  viewingAccount=@"current";
- // The viewing account's own fetchData covers a pending refresh; no duplicate
- // fetch is scheduled one second later.
+ // Native fetch entry does not prove fresh server state; the delayed request survives.
  GSRefreshNativeLibrary();[current fetchData];
- Drain(^BOOL{return [GSPhotosIntegrationSnapshot()[@"syncCoveredByNativeFetch"]unsignedIntegerValue]==1;});
- @autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.5]];}
- assert(current.fetches==3);
- // A soft fetch is not proof of a full server read: the queued refresh still runs.
+ Drain(^BOOL{return current.fetches==4;});
+ // A soft fetch must also leave the queued refresh intact.
  GSRefreshNativeLibrary();[current fetchDataSoft];
- Drain(^BOOL{return current.fetches==5;});
- assert([GSPhotosIntegrationSnapshot()[@"syncCoveredByNativeFetch"]unsignedIntegerValue]==1);
+ Drain(^BOOL{return current.fetches==6;});
  // The app releases per-sync synchronizers; the newest capture per account is
  // retained so a completion signal after release still reaches the sync queue.
  __weak PHSUserItemsSynchronizer *released=current;current=nil;
  for(int i=0;i<5;i++)@autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];} // Drain pending autoreleases pinning the object.
  assert(released); // Alive through the integration's map, not this test.
- GSRefreshNativeLibrary();Drain(^BOOL{return released.fetches==6;});
+ GSRefreshNativeLibrary();Drain(^BOOL{return released.fetches==7;});
  assert(other.fetches==2);
- NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-covered and release-surviving refresh");
+ NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-preserved and release-surviving refresh");
  return 0;
 }}
