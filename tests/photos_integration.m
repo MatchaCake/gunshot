@@ -27,10 +27,19 @@ static id Bundle(id object,SEL selector){return [FixtureBundle new];}
 @end
 @interface PHSServerPhoto : NSObject
 @property(nonatomic) unsigned char hasOriginalBytes;
-@property(nonatomic) unsigned char storagePolicy;
 @property(nonatomic) _Bool isPartialBackup;
 @end
 @implementation PHSServerPhoto @end
+@interface PhotoWithStoragePolicy : PHSServerPhoto
+@property(nonatomic) unsigned char storagePolicy;
+@end
+@implementation PhotoWithStoragePolicy @end
+@interface PhotoWithIncompatibleStoragePolicy : PHSServerPhoto
+- (id)storagePolicy;
+@end
+@implementation PhotoWithIncompatibleStoragePolicy
+- (id)storagePolicy{assert(0 && "Incompatible diagnostic ABI must not be called");return nil;}
+@end
 @interface ExtendedPhoto : NSObject
 @property(nonatomic,strong) PHSServerPhoto *serverPhoto;
 @end
@@ -78,7 +87,9 @@ static id Bundle(id object,SEL selector){return [FixtureBundle new];}
 @end
 static void Drain(BOOL(^finished)(void)){
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:4];
- while(!finished()&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+ // Per-iteration pools mirror the app runtime, where autoreleased references
+ // from each runloop pass do not outlive it.
+ while(!finished()&&deadline.timeIntervalSinceNow>0)@autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];}
  assert(finished());
 }
 int main(void){@autoreleasepool{
@@ -86,7 +97,7 @@ int main(void){@autoreleasepool{
  GSInstallPhotosIntegration();assert([GSPhotosIntegrationSnapshot()[@"qualityAvailable"]boolValue]&&[GSPhotosIntegrationSnapshot()[@"syncAvailable"]boolValue]);
  PHSOneUpInfoPanelDetailsViewController *details=[PHSOneUpInfoPanelDetailsViewController new];details.isBackedUp=YES;
  details.original=[[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:@"保存容量を使用しません" backupStatusSubtitle:@"保存容量の節約" learnMoreLink:@"native-link"];
- details.extendedPhoto=[ExtendedPhoto new];PHSServerPhoto *photo=[PHSServerPhoto new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
+ details.extendedPhoto=[ExtendedPhoto new];PhotoWithStoragePolicy *photo=[PhotoWithStoragePolicy new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
  for(unsigned char value=0;value<4;value++){
   photo.hasOriginalBytes=value;id result=[details getBackupStatusModelData];
   if(value==1){assert(result!=details.original);assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);assert([[result backupStatus]isEqual:details.original.backupStatus]);}
@@ -96,7 +107,32 @@ int main(void){@autoreleasepool{
  photo.isPartialBackup=NO;details.isBackedUp=NO;assert([details getBackupStatusModelData]==details.original);
  // Server-confirmed originals correct the label without the backup-routing toggle or its symbols.
  details.isBackedUp=YES;assert([details getBackupStatusModelData]!=details.original);
- photo.storagePolicy=2;assert([details getBackupStatusModelData]==details.original);photo.storagePolicy=1;
+ // Quota-free uploads report hasOriginalBytes=Yes with a non-Standard storagePolicy;
+ // the correction depends only on the original-bytes model, and each observed policy
+ // value is counted for diagnostics.
+ for(unsigned char policy=0;policy<4;policy++){
+  photo.storagePolicy=policy;id result=[details getBackupStatusModelData];
+  assert(result!=details.original);assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);
+  NSString *policyKey=[NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy];
+  assert([GSPhotosIntegrationSnapshot()[policyKey]unsignedIntegerValue]>=1);
+ }
+ photo.storagePolicy=1;
+ // Optional diagnostics must not gate quality correction or call an unknown ABI.
+ for(PHSServerPhoto *optional in @[[PHSServerPhoto new],[PhotoWithIncompatibleStoragePolicy new]]){
+  optional.hasOriginalBytes=1;details.extendedPhoto.serverPhoto=optional;
+  NSDictionary *before=GSPhotosIntegrationSnapshot();
+  id result=[details getBackupStatusModelData];
+  assert(result!=details.original);
+  assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);
+  assert([[result backupStatus]isEqual:details.original.backupStatus]);
+  for(unsigned char policy=0;policy<4;policy++){
+   NSString *key=[NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy];
+   assert([before[key]isEqual:GSPhotosIntegrationSnapshot()[key]]);
+  }
+  optional.isPartialBackup=YES;assert([details getBackupStatusModelData]==details.original);
+  optional.isPartialBackup=NO;optional.hasOriginalBytes=2;assert([details getBackupStatusModelData]==details.original);
+ }
+ details.extendedPhoto.serverPhoto=photo;
  assert([details.original.backupStatusSubtitle isEqual:@"保存容量の節約"]); // No mutation of native state.
 #ifdef GS_TEST_LEGACY
  assert([details contentViewModelWithTitle:details.original.backupStatus subtitle:details.original.backupStatusSubtitle subtitleContainsHTML:YES image:@"native-icon"]==details.original);
@@ -109,6 +145,20 @@ int main(void){@autoreleasepool{
  GSRefreshNativeLibrary();GSRefreshNativeLibrary();
  Drain(^BOOL{return current.fetches==2;});assert(other.fetches==1); // Coalesced and account-bound.
  viewingAccount=@"other";GSRefreshNativeLibrary();Drain(^BOOL{return other.fetches==2;});assert(current.fetches==2);
- NSLog(@"PASS server-confirmed original label, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync");
+ viewingAccount=@"current";
+ // Native fetch entry does not prove fresh server state; the delayed request survives.
+ GSRefreshNativeLibrary();[current fetchData];
+ Drain(^BOOL{return current.fetches==4;});
+ // A soft fetch must also leave the queued refresh intact.
+ GSRefreshNativeLibrary();[current fetchDataSoft];
+ Drain(^BOOL{return current.fetches==6;});
+ // The app releases per-sync synchronizers; the newest capture per account is
+ // retained so a completion signal after release still reaches the sync queue.
+ __weak PHSUserItemsSynchronizer *released=current;current=nil;
+ for(int i=0;i<5;i++)@autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];} // Drain pending autoreleases pinning the object.
+ assert(released); // Alive through the integration's map, not this test.
+ GSRefreshNativeLibrary();Drain(^BOOL{return released.fetches==7;});
+ assert(other.fetches==2);
+ NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-preserved and release-surviving refresh");
  return 0;
 }}

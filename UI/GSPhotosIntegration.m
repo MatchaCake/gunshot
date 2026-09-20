@@ -10,7 +10,7 @@
 - (instancetype)initWithBackupStatus:(NSString *)status backupStatusSubtitle:(NSString *)subtitle learnMoreLink:(NSString *)link;
 @end
 
-// Exact, version-specific metadata. Never set backup flags or edit the native database.
+// Exact runtime ABI checks. Never set backup flags or edit the native database.
 static NSObject *GSLock;
 static NSMapTable *GSSynchronizers;
 static NSMutableDictionary *GSCounts;
@@ -44,19 +44,27 @@ void GSRefreshNativeLibrary(void){
 }
 static void GSCaptureSynchronizer(id object){
  id account=GSGet(object,@"accountID");if(!account)return;
+ // The app releases synchronizers between its own syncs, so only the newest
+ // capture per account is kept alive as the entry into the app's sync queue.
  @synchronized(GSLock){[GSSynchronizers setObject:object forKey:account];}
+ // Fetch entry is not completion; keep the coalesced refresh pending.
  dispatch_async(dispatch_get_main_queue(),^{GSFlushRefresh();});
 }
 static BOOL GSHasConfirmedOriginal(id controller){
  if(!GSMethod(controller,@"isBackedUp","B16@0:8")||!((BOOL(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"isBackedUp")))return NO;
  id photo=GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto");
- if(![photo isKindOfClass:NSClassFromString(@"PHSServerPhoto")]||!GSMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSMethod(photo,@"storagePolicy","C16@0:8")||!GSMethod(photo,@"isPartialBackup","B16@0:8"))return NO;
+ if(![photo isKindOfClass:NSClassFromString(@"PHSServerPhoto")]||!GSMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSMethod(photo,@"isPartialBackup","B16@0:8"))return NO;
  unsigned char originals=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"hasOriginalBytes"));
  // Enum descriptor: Unknown=0, Yes=1, No=2, Maybe=3. Maybe is not Yes.
  GSCount(originals==1?@"serverOriginal":originals==2?@"serverNotOriginal":@"serverOriginalUnknown");
  if(originals!=1||((BOOL(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"isPartialBackup")))return NO;
- unsigned char policy=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"storagePolicy"));
- if(policy!=1)return NO; // Only the Standard / Storage Saver label mismatch.
+ // hasOriginalBytes is the server's own original-bytes model. Quota-free Pixel
+ // uploads report Yes with a non-Standard storagePolicy, so the policy value is
+ // recorded for diagnostics but does not gate the correction.
+ if(GSMethod(photo,@"storagePolicy","C16@0:8")){
+  unsigned char policy=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"storagePolicy"));
+  GSCount([NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy]);
+ }
  return YES;
 }
 // 7.20.2 builds a native label/image content model instead of BackupStatusData.
@@ -72,7 +80,10 @@ static id GSBackupStatus(id controller,SEL selector,IMP original){
 }
 void GSInstallPhotosIntegration(void){
  if(GSInstalled||!GSIsGooglePhotos()||!GSPhotosHostSupported())return;
- GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSSynchronizers=[NSMapTable strongToWeakObjectsMapTable];GSInstalled=YES;
+ // Strong values: a weak table loses the per-sync synchronizer before the
+ // coalescing window ends, stranding the pending refresh (syncWaitingForAccount
+ // with no live requester on device). One object per account, newest wins.
+ GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSSynchronizers=[NSMapTable strongToStrongObjectsMapTable];GSInstalled=YES;
  Class sync=NSClassFromString(@"PHSUserItemsSynchronizer");
  Method fetch=class_getInstanceMethod(sync,NSSelectorFromString(@"fetchData"));
  Method account=class_getInstanceMethod(sync,NSSelectorFromString(@"accountID"));
