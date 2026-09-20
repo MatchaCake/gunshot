@@ -107,6 +107,12 @@ static GSPanel *Panel(UIViewController *host){
 }
 static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(void)){
  NSIndexPath *path=[NSIndexPath indexPathForRow:1 inSection:6];
+ // Offscreen rows keep estimated heights until a reload re-measures them, so the first
+ // position-preserving reload after the scroll still shifts geometry. Run the same
+ // reload the refresh path uses until the layout reaches its fixed point, then capture
+ // the baseline the later reload will be compared against.
+ [panel reloadTablePreservingPosition];[panel.tableView layoutIfNeeded];
+ [panel reloadTablePreservingPosition];[panel.tableView layoutIfNeeded];
  UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
