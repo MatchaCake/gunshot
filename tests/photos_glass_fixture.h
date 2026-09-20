@@ -143,6 +143,7 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
 
   UIWindow *overlay=GSFixtureGlassOverlayWindow(window);UITabBarController *nativeTabs=(UITabBarController *)overlay.rootViewController;
   GS_GLASS_CHECK(overlay&&nativeTabs&&nativeTabs.parentViewController==nil&&controller.childViewControllers.count==hostChildren);
+  NSLog(@"GSDIAG glass delegate=%p mode=%ld tabs=%lu tabBarWindow=%p(%@) overlay=%p viewHidden=%d",nativeTabs.delegate,(long)nativeTabs.mode,(unsigned long)nativeTabs.tabs.count,nativeTabs.tabBar.window,NSStringFromClass(nativeTabs.tabBar.window.class),overlay,nativeTabs.view.hidden);
   GS_GLASS_CHECK(nativeTabs.delegate&&nativeTabs.mode==UITabBarControllerModeTabBar&&nativeTabs.tabs.count==4&&nativeTabs.tabBar.window==overlay&&!nativeTabs.view.hidden);
   GS_GLASS_CHECK([nativeTabs.tabs[0].title isEqual:@"Photos"]&&[nativeTabs.tabs[1].title isEqual:@"Collections"]&&[nativeTabs.tabs[2].title isEqual:@"Create"]);
   GS_GLASS_CHECK([nativeTabs.tabs[3] isKindOfClass:NSClassFromString(@"UISearchTab")]);
