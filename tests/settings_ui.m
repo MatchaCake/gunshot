@@ -88,9 +88,10 @@ static void Finish(BOOL success,NSString *reason){
  [[NSString stringWithFormat:@"%@ %@\n",success?@"PASS":@"FAIL",reason]writeToFile:[Documents() stringByAppendingPathComponent:@"result.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
  NSLog(@"Settings UIKit smoke: %@",reason);exit(success?0:1);
 }
+static NSString *GSAwaitWhat;
 static void Await(BOOL(^condition)(void),void(^next)(void),NSDate *deadline){
  if(condition()){next();return;}
- if(deadline.timeIntervalSinceNow<=0){Finish(NO,@"presentation deadline exceeded");return;}
+ if(deadline.timeIntervalSinceNow<=0){Finish(NO,[NSString stringWithFormat:@"presentation deadline exceeded (%@)",GSAwaitWhat]);return;}
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(),^{Await(condition,next,deadline);});
 }
 static void Capture(UIWindow *window,NSString *name){
@@ -116,7 +117,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,@"unchanged timer polls replaced the switch or moved the settings list");return;}
   // A real changed snapshot still updates, retaining the visible row's position.
   atomic_store(&FixtureConcurrent,3);[panel refresh];
-  Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
+  GSAwaitWhat=@"site1";Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
    CGFloat updated=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
    UITableViewCell *after=[panel.tableView cellForRowAtIndexPath:path];
    if(fabs(updated-relative)>1||![((UISwitch *)after.accessoryView)isOn]){
@@ -152,11 +153,11 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  // Authenticate at app activation, before any GoToHP settings are presented.
  GSStartAccountConnection();
  GSStartBackupIntegration();
- Await(^BOOL{return [GSAccountConnectionSnapshot()[@"state"]isEqual:@"connected"];},^{
+ GSAwaitWhat=@"site2";Await(^BOOL{return [GSAccountConnectionSnapshot()[@"state"]isEqual:@"connected"];},^{
  if(root.presentedViewController||atomic_load(&FixtureNativeConnections)!=1){Finish(NO,@"launch authorization required UI or connected more than once");return;}
  // A detached delegate controller must resolve to the active scene's root.
  GSPresentSettings([UIViewController new]);
- Await(^BOOL{GSPanel *panel=Panel(root);return panel.settingsMode&&panel.viewIfLoaded.window&&[[panel.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].detailTextLabel.text isEqual:@"認証確認済み · アップロード可能"];},^{
+ GSAwaitWhat=@"site3";Await(^BOOL{GSPanel *panel=Panel(root);return panel.settingsMode&&panel.viewIfLoaded.window&&[[panel.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].detailTextLabel.text isEqual:@"認証確認済み · アップロード可能"];},^{
   NSDictionary *runtime=GSEmbeddedRuntimeSnapshot();
   if(![runtime[@"conditionsAccepted"]boolValue]||!SnapshotDuringAuthorization||![runtime[@"coreReady"]boolValue]||![runtime[@"foreground"]boolValue]||![runtime[@"path"]isEqual:@"satisfied"]){Finish(NO,@"embedded runtime state or nonblocking authorization snapshot failed");return;}
   NSSet *allowed=[NSSet setWithArray:@[@"uploadSummary",@"coreReady",@"conditionsAccepted",@"foreground",@"path",@"networkOnline",@"wifi",@"charging",@"authorization"]];
@@ -239,7 +240,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
    UIViewController *menu=[UIViewController new];menu.view.backgroundColor=UIColor.secondarySystemBackgroundColor;
    [root presentViewController:menu animated:NO completion:^{
     GSPresentSettings(root); // Root already has a presented account menu.
-    Await(^BOOL{return Panel(menu).viewIfLoaded.window!=nil;},^{
+    GSAwaitWhat=@"site4";Await(^BOOL{return Panel(menu).viewIfLoaded.window!=nil;},^{
      UIViewController *first=menu.presentedViewController;
      GSPresentSettings(root);GSPresentSettings(nil);
      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
@@ -248,7 +249,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
       Capture(self.window,@"settings-dark.png");
       [root dismissViewControllerAnimated:NO completion:^{
        GSPresentSettings(nil);
-       Await(^BOOL{return Panel(root).viewIfLoaded.window!=nil&&[GSUploadMonitorSnapshot()[@"reachable"]boolValue]&&GSEmbeddedRuntimeSnapshot()[@"uploadSummary"]!=nil;},^{
+       GSAwaitWhat=@"site5";Await(^BOOL{return Panel(root).viewIfLoaded.window!=nil&&[GSUploadMonitorSnapshot()[@"reachable"]boolValue]&&GSEmbeddedRuntimeSnapshot()[@"uploadSummary"]!=nil;},^{
         // An empty queue has revision zero and must not manufacture completion.
         if(NativeRefreshes){Finish(NO,@"empty queue incorrectly announced completion");return;}
         Finish(YES,@"detached, nested, repeated and nil-host presentation; stationary polling and changed-snapshot anchor retained; settings rendered; real jailed runtime online, launch completion observer active and authorization snapshot nonblocking");},deadline);
