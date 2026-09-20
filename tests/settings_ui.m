@@ -233,10 +233,6 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   [panel setValue:@NO forKey:@"busy"];[panel.tableView reloadData];
   Capture(self.window,@"settings-english.png");
   GSSetLanguage(@"ja");[panel viewWillAppear:NO];
-  // Rows jumped over by scrollToRowAtIndexPath keep estimated heights until the next
-  // reload re-measures them, which would shift CheckStationaryPolling's baseline. Settle
-  // every height first so the scroll below already lands on the final geometry.
-  [panel.tableView reloadData];[panel.tableView layoutIfNeeded];
   [panel.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:7] atScrollPosition:UITableViewScrollPositionBottom animated:NO];
   Capture(self.window,@"settings-history.png");
   CheckStationaryPolling(panel,self.window,^{
