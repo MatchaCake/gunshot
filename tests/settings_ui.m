@@ -167,12 +167,14 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   if(![retry.detailTextLabel.text isEqual:@"7 回"]||![retryPanel.valueSheet.actions[7].title isEqual:@"✓ 7 回"]){Finish(NO,@"Japanese retry setting must use the protocol key for display and selection");return;}
   // Issue #50: Liquid Glass action sheets must anchor to the tapped row, not a fixed top offset.
   NSIndexPath *retryPath=[NSIndexPath indexPathForRow:2 inSection:2];
+  UIAlertController *staleSheet=retryPanel.valueSheet;
   [retryPanel.tableView scrollToRowAtIndexPath:retryPath atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
   [retryPanel.tableView layoutIfNeeded];
   [retryPanel tableView:retryPanel.tableView didSelectRowAtIndexPath:retryPath];
   UIAlertController *retrySheet=retryPanel.valueSheet;
   UIPopoverPresentationController *retryPopover=retrySheet.popoverPresentationController;
   UITableViewCell *retryCell=[retryPanel.tableView cellForRowAtIndexPath:retryPath];
+  NSLog(@"GSDIAG test newSheet=%d sheet=%p style=%ld popover=%p sourceView=%p(%@) retryCell=%p srcRect=%@ cellBounds=%@ windowed=%d",retrySheet!=staleSheet,retrySheet,(long)retrySheet.modalPresentationStyle,retryPopover,retryPopover.sourceView,NSStringFromClass(retryPopover.sourceView.class),retryCell,NSStringFromCGRect(retryPopover.sourceRect),NSStringFromCGRect(retryCell.bounds),retryPanel.tableView.window!=nil);
   if(!retrySheet||retrySheet.actions.count<11){Finish(NO,@"retry sheet missing after row selection");return;}
   if(retryCell){
    if(retryPopover.sourceView!=retryCell||!CGRectEqualToRect(retryPopover.sourceRect,retryCell.bounds)){Finish(NO,@"sheet must anchor to the tapped cell");return;}

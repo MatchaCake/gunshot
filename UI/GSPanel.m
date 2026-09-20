@@ -301,7 +301,9 @@
  return path.row<[self.tableView numberOfRowsInSection:path.section];
 }
 - (void)configureSheetPopover:(UIViewController *)controller{
- UIPopoverPresentationController *popover=controller.popoverPresentationController;if(!popover)return;
+ UIPopoverPresentationController *popover=controller.popoverPresentationController;
+ NSLog(@"GSDIAG configure controller=%p style=%ld popover=%p path=%@",controller,(long)controller.modalPresentationStyle,popover,self.sheetSourcePath);
+ if(!popover)return;
  // iOS 26/27 Liquid Glass anchors action sheets to sourceView/sourceRect. A fixed top
  // offset made menus appear above the tapped row and let tall sheets (Language) fail to show.
  UIView *source=nil;CGRect rect=CGRectZero;NSIndexPath *path=self.sheetSourcePath;
@@ -315,7 +317,9 @@
   if(CGRectIsEmpty(bounds)||CGRectIsNull(bounds)){source=self.view;bounds=self.view.bounds;}
   rect=CGRectMake(CGRectGetMidX(bounds),CGRectGetMidY(bounds),1,1);
  }
+ NSLog(@"GSDIAG configure resolved source=%p(%@) rect=%@ validPath=%d cellHit=%d",source,NSStringFromClass(source.class),NSStringFromCGRect(rect),[self isValidSheetAnchorPath:path],[source isKindOfClass:UITableViewCell.class]);
  popover.sourceView=source;popover.sourceRect=rect;popover.permittedArrowDirections=UIPopoverArrowDirectionAny;
+ NSLog(@"GSDIAG configure readback popover=%p sourceView=%p rect=%@",controller.popoverPresentationController,controller.popoverPresentationController.sourceView,NSStringFromCGRect(controller.popoverPresentationController.sourceRect));
 }
 - (void)sheet:(UIAlertController *)sheet{[self configureSheetPopover:sheet];[self presentViewController:sheet animated:YES completion:nil];}
 - (void)primary{if(self.busy)return;if(self.settingsMode)[self addAccount];else if(self.sharedItems.count){NSArray *items=self.sharedItems;self.sharedItems=nil;if([items.firstObject isKindOfClass:PHAsset.class])[self importAssets:items];else[self importURLs:items];}else[self choose];}
