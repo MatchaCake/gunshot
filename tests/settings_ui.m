@@ -107,11 +107,6 @@ static GSPanel *Panel(UIViewController *host){
 }
 static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(void)){
  NSIndexPath *path=[NSIndexPath indexPathForRow:1 inSection:6];
- // Rows jumped over by scrollToRowAtIndexPath keep estimated heights until the next
- // reload re-measures them, which would shift the baseline captured below. Settle the
- // whole table once so the positions compared across the refresh use actual heights.
- [panel reloadTablePreservingPosition];
- [panel.tableView layoutIfNeeded];
  UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
@@ -119,7 +114,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  NSUInteger reads=atomic_load(&FixtureAccountReads);
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{
   CGFloat now=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
-  if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,@"unchanged timer polls replaced the switch or moved the settings list");return;}
+  if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,[NSString stringWithFormat:@"unchanged timer polls replaced the switch or moved the settings list (reads=%lu->%lu cell=%p now=%p relative=%.2f now=%.2f off=%.2f)",(unsigned long)reads,(unsigned long)atomic_load(&FixtureAccountReads),cell,[panel.tableView cellForRowAtIndexPath:path],relative,now,panel.tableView.contentOffset.y]);return;}
   // A real changed snapshot still updates, retaining the visible row's position.
   atomic_store(&FixtureConcurrent,3);[panel refresh];
   GSAwaitWhat=@"site1";Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
@@ -238,6 +233,10 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   [panel setValue:@NO forKey:@"busy"];[panel.tableView reloadData];
   Capture(self.window,@"settings-english.png");
   GSSetLanguage(@"ja");[panel viewWillAppear:NO];
+  // Rows jumped over by scrollToRowAtIndexPath keep estimated heights until the next
+  // reload re-measures them, which would shift CheckStationaryPolling's baseline. Settle
+  // every height first so the scroll below already lands on the final geometry.
+  [panel.tableView reloadData];[panel.tableView layoutIfNeeded];
   [panel.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:7] atScrollPosition:UITableViewScrollPositionBottom animated:NO];
   Capture(self.window,@"settings-history.png");
   CheckStationaryPolling(panel,self.window,^{
