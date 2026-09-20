@@ -301,7 +301,15 @@
  return path.row<[self.tableView numberOfRowsInSection:path.section];
 }
 - (void)configureSheetPopover:(UIViewController *)controller{
- UIPopoverPresentationController *popover=controller.popoverPresentationController;if(!popover)return;
+ UIPopoverPresentationController *popover=controller.popoverPresentationController;
+ // UIKit only creates a popover controller once modalPresentationStyle is Popover; action
+ // sheets default to a managed style, so popover stays nil and the anchor below was never
+ // applied. Opt action sheets into Popover on iOS 26+, where Liquid Glass anchors them to
+ // sourceView/sourceRect; earlier systems keep the stock bottom sheet untouched.
+ if(!popover&&[controller isKindOfClass:UIAlertController.class]&&((UIAlertController *)controller).preferredStyle==UIAlertControllerStyleActionSheet){
+  if(@available(iOS 26.0,*)){controller.modalPresentationStyle=UIModalPresentationPopover;popover=controller.popoverPresentationController;}
+ }
+ if(!popover)return;
  // iOS 26/27 Liquid Glass anchors action sheets to sourceView/sourceRect. A fixed top
  // offset made menus appear above the tapped row and let tall sheets (Language) fail to show.
  UIView *source=nil;CGRect rect=CGRectZero;NSIndexPath *path=self.sheetSourcePath;
