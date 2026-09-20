@@ -52,9 +52,24 @@ No / Unknown / Maybe、未バックアップ、部分バックアップは変更
 設定が original という理由だけで成功・画質表示を変更する処理はありません。
 サーバーから原本情報が取得できない写真では、元の表示のままになる場合があります。
 
+## 差分同期の信頼性
+
+完了通知の反映は、アプリ自身の PHSUserItemsSynchronizer に fetchData を依頼して
+行います。以前は観測した同期オブジェクトを weak 参照で保持していましたが、
+アプリは同期のたびにオブジェクトを解放するため、合流待ち（1 秒）の間に参照が
+失われ、要求が syncWaitingForAccount のまま送信されない事例を実機診断で確認
+しました（syncSignals は増えるのに syncRequested が発生しない）。現在は
+アカウントごとに最新の 1 個だけを保持し、新しい観測で置き換えます。純正
+データベースやバックアップ状態への書き込みは引き続き行いません。
+
+また、表示中アカウントの純正 fetchData が進行した場合、待機中の要求と同じ
+サーバー状態を読むため、要求は充足として扱い、重複した fetch は発行しません
+（syncCoveredByNativeFetch として計上）。fetchDataSoft は完全なサーバー読取の
+保証がないため充足とは見なしません。
+
 ## 診断
 
-- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数。
+- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数、純正 fetch による充足件数（syncCoveredByNativeFetch）、同期オブジェクト待ち件数（syncWaitingForAccount）。
 - completionMonitor.uploadSummary（jailed では runtime.uploadSummary にも表示）: デフォルト画質、各ジョブの画質別・状態別件数と対応 profile、完了 revision。
 - uploadSummary の profile は送信ポリシーです。実メディアのサーバー側品質を一括で検証した意味ではありません。
 - アカウント、ファイル名、mediaKey、ハッシュ、トークンは追加診断に含めません。

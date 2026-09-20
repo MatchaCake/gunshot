@@ -42,10 +42,17 @@ void GSRefreshNativeLibrary(void){
  if(!GSSyncAvailable)return;
  dispatch_async(dispatch_get_main_queue(),^{GSPending=YES;GSFlushRefresh();});
 }
-static void GSCaptureSynchronizer(id object){
+static void GSCaptureSynchronizer(id object,BOOL covers){
  id account=GSGet(object,@"accountID");if(!account)return;
+ // The app releases synchronizers between its own syncs, so only the newest
+ // capture per account is kept alive as the entry into the app's sync queue.
  @synchronized(GSLock){[GSSynchronizers setObject:object forKey:account];}
- dispatch_async(dispatch_get_main_queue(),^{GSFlushRefresh();});
+ dispatch_async(dispatch_get_main_queue(),^{
+  // A native fetchData for the viewing account reads the same server state a
+  // pending refresh would request; the request is covered, not duplicated.
+  if(covers&&GSPending&&GSNativeAccountMatches(account)){GSPending=NO;GSCount(@"syncCoveredByNativeFetch");return;}
+  GSFlushRefresh();
+ });
 }
 static BOOL GSHasConfirmedOriginal(id controller){
  if(!GSMethod(controller,@"isBackedUp","B16@0:8")||!((BOOL(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"isBackedUp")))return NO;
@@ -75,13 +82,17 @@ static id GSBackupStatus(id controller,SEL selector,IMP original){
 }
 void GSInstallPhotosIntegration(void){
  if(GSInstalled||!GSIsGooglePhotos()||!GSPhotosHostSupported())return;
- GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSSynchronizers=[NSMapTable strongToWeakObjectsMapTable];GSInstalled=YES;
+ // Strong values: a weak table loses the per-sync synchronizer before the
+ // coalescing window ends, stranding the pending refresh (syncWaitingForAccount
+ // with no live requester on device). One object per account, newest wins.
+ GSLock=[NSObject new];GSCounts=[NSMutableDictionary dictionary];GSSynchronizers=[NSMapTable strongToStrongObjectsMapTable];GSInstalled=YES;
  Class sync=NSClassFromString(@"PHSUserItemsSynchronizer");
  Method fetch=class_getInstanceMethod(sync,NSSelectorFromString(@"fetchData"));
  Method account=class_getInstanceMethod(sync,NSSelectorFromString(@"accountID"));
  if(fetch&&account&&!strcmp(method_getTypeEncoding(fetch),"v16@0:8")&&!strcmp(method_getTypeEncoding(account),"@16@0:8")){
   for(NSString *name in @[@"fetchData",@"fetchDataSoft"]){SEL s=NSSelectorFromString(name);Method m=class_getInstanceMethod(sync,s);if(!m||strcmp(method_getTypeEncoding(m),"v16@0:8"))continue;
-   IMP old=method_getImplementation(m);method_setImplementation(m,imp_implementationWithBlock(^(id object){GSCaptureSynchronizer(object);((void(*)(id,SEL))old)(object,s);}));
+   BOOL covers=[name isEqual:@"fetchData"]; // A soft fetch is not proof of a full server read.
+   IMP old=method_getImplementation(m);method_setImplementation(m,imp_implementationWithBlock(^(id object){GSCaptureSynchronizer(object,covers);((void(*)(id,SEL))old)(object,s);}));
   }
   GSSyncAvailable=YES;
  }

@@ -78,7 +78,9 @@ static id Bundle(id object,SEL selector){return [FixtureBundle new];}
 @end
 static void Drain(BOOL(^finished)(void)){
  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:4];
- while(!finished()&&deadline.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+ // Per-iteration pools mirror the app runtime, where autoreleased references
+ // from each runloop pass do not outlive it.
+ while(!finished()&&deadline.timeIntervalSinceNow>0)@autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];}
  assert(finished());
 }
 int main(void){@autoreleasepool{
@@ -118,6 +120,24 @@ int main(void){@autoreleasepool{
  GSRefreshNativeLibrary();GSRefreshNativeLibrary();
  Drain(^BOOL{return current.fetches==2;});assert(other.fetches==1); // Coalesced and account-bound.
  viewingAccount=@"other";GSRefreshNativeLibrary();Drain(^BOOL{return other.fetches==2;});assert(current.fetches==2);
- NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync");
+ viewingAccount=@"current";
+ // The viewing account's own fetchData covers a pending refresh; no duplicate
+ // fetch is scheduled one second later.
+ GSRefreshNativeLibrary();[current fetchData];
+ Drain(^BOOL{return [GSPhotosIntegrationSnapshot()[@"syncCoveredByNativeFetch"]unsignedIntegerValue]==1;});
+ @autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:1.5]];}
+ assert(current.fetches==3);
+ // A soft fetch is not proof of a full server read: the queued refresh still runs.
+ GSRefreshNativeLibrary();[current fetchDataSoft];
+ Drain(^BOOL{return current.fetches==5;});
+ assert([GSPhotosIntegrationSnapshot()[@"syncCoveredByNativeFetch"]unsignedIntegerValue]==1);
+ // The app releases per-sync synchronizers; the newest capture per account is
+ // retained so a completion signal after release still reaches the sync queue.
+ __weak PHSUserItemsSynchronizer *released=current;current=nil;
+ for(int i=0;i<5;i++)@autoreleasepool{[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];} // Drain pending autoreleases pinning the object.
+ assert(released); // Alive through the integration's map, not this test.
+ GSRefreshNativeLibrary();Drain(^BOOL{return released.fetches==6;});
+ assert(other.fetches==2);
+ NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-covered and release-surviving refresh");
  return 0;
 }}
