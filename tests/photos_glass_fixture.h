@@ -130,24 +130,32 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   GS_GLASS_CHECK([cell.textLabel.text isEqual:@"Google Photos · Liquid Glass"]&&[toggle isKindOfClass:UISwitch.class]&&!toggle.on&&toggle.enabled==modern);
   if(!modern){GS_GLASS_CHECK(!GSPhotosGlassEnabled());return YES;}
 
-  PHSTabBarController *controller=[PHSTabBarController new];GSFixtureAttach(controller,window);
+  // The settings sheet stays presented over the fixture's main window for the whole
+  // test, and the overlay intentionally hides while anything is presented over its
+  // host window. Run the overlay checks in a dedicated bare window so they model the
+  // real Photos main window, which has no modal while the bottom bar is visible.
+  UIWindow *host=[[UIWindow alloc]initWithWindowScene:window.windowScene];
+  host.frame=window.windowScene.coordinateSpace.bounds;
+  host.rootViewController=[UIViewController new];host.hidden=NO;
+
+  PHSTabBarController *controller=[PHSTabBarController new];GSFixtureAttach(controller,host);
   PHSSegmentedControl *segments=controller.floatingSegmentedControl;M3CButton *search=controller.floatingSearchButton;UIStackView *bar=controller.floatingBottomTabBar;
   UIView *selection=segments.selection;UIImage *glyph=[search imageForState:UIControlStateNormal];UITapGestureRecognizer *gesture=controller.fixtureGesture;
   NSUInteger hostChildren=controller.childViewControllers.count;
-  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureGlassOverlayWindow(window)&&segments.alpha==1&&search.alpha==1);
+  GS_GLASS_CHECK(!GSPhotosGlassEnabled()&&!GSFixtureGlassOverlayWindow(host)&&segments.alpha==1&&search.alpha==1);
   GS_GLASS_CHECK([search.allTargets containsObject:controller]&&[segments.allTargets containsObject:controller]&&[search.gestureRecognizers containsObject:gesture]);
 
   toggle.on=YES;[toggle sendActionsForControlEvents:UIControlEventValueChanged];GS_GLASS_CHECK(GSPhotosGlassEnabled());GSInstallPhotosGlass();GSInstallPhotosGlass();[controller viewDidLayoutSubviews];
   NSDictionary *snapshot=GSPhotosGlassSnapshot();GS_GLASS_CHECK([snapshot[@"available"]boolValue]&&[snapshot[@"hooksInstalled"]boolValue]&&[snapshot[@"attachedBars"]unsignedIntegerValue]>=1);
   GS_GLASS_CHECK([snapshot[@"designCompatibilityOverride"]boolValue]&&![snapshot[@"restartRequired"]boolValue]&&[snapshot[@"activeThisLaunch"]boolValue]);
 
-  UIWindow *overlay=GSFixtureGlassOverlayWindow(window);UITabBarController *nativeTabs=(UITabBarController *)overlay.rootViewController;
+  UIWindow *overlay=GSFixtureGlassOverlayWindow(host);UITabBarController *nativeTabs=(UITabBarController *)overlay.rootViewController;
   GS_GLASS_CHECK(overlay&&nativeTabs&&nativeTabs.parentViewController==nil&&controller.childViewControllers.count==hostChildren);
   NSLog(@"GSDIAG glass delegate=%p mode=%ld tabs=%lu tabBarWindow=%p(%@) overlay=%p viewHidden=%d",nativeTabs.delegate,(long)nativeTabs.mode,(unsigned long)nativeTabs.tabs.count,nativeTabs.tabBar.window,NSStringFromClass(nativeTabs.tabBar.window.class),overlay,nativeTabs.view.hidden);
   GS_GLASS_CHECK(nativeTabs.delegate&&nativeTabs.mode==UITabBarControllerModeTabBar&&nativeTabs.tabs.count==4&&nativeTabs.tabBar.window==overlay&&!nativeTabs.view.hidden);
   GS_GLASS_CHECK([nativeTabs.tabs[0].title isEqual:@"Photos"]&&[nativeTabs.tabs[1].title isEqual:@"Collections"]&&[nativeTabs.tabs[2].title isEqual:@"Create"]);
   GS_GLASS_CHECK([nativeTabs.tabs[3] isKindOfClass:NSClassFromString(@"UISearchTab")]);
-  GS_GLASS_CHECK(CGRectEqualToRect(overlay.frame,window.windowScene.coordinateSpace.bounds)&&CGRectGetHeight(nativeTabs.view.bounds)>CGRectGetHeight(bar.bounds)*3.0);
+  GS_GLASS_CHECK(CGRectEqualToRect(overlay.frame,host.windowScene.coordinateSpace.bounds)&&CGRectGetHeight(nativeTabs.view.bounds)>CGRectGetHeight(bar.bounds)*3.0);
   [nativeTabs.view setNeedsLayout];[nativeTabs.view layoutIfNeeded];[nativeTabs.tabBar layoutIfNeeded];
   CGRect nativeHit=[nativeTabs.tabBar convertRect:nativeTabs.tabBar.bounds toView:overlay];
   GS_GLASS_CHECK(CGRectGetHeight(nativeHit)>0&&[overlay pointInside:CGPointMake(CGRectGetMidX(nativeHit),CGRectGetMidY(nativeHit)) withEvent:nil]);
@@ -168,8 +176,8 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   bar.alpha=0;[controller viewDidLayoutSubviews];GS_GLASS_CHECK(!overlay.hidden&&nativeTabs.view.hidden);
   bar.alpha=1;[controller viewDidLayoutSubviews];GS_GLASS_CHECK(!overlay.hidden&&!nativeTabs.view.hidden);
 
-  UIView *occluder=[[UIView alloc]initWithFrame:CGRectMake(0,MAX(0,window.bounds.size.height-140),window.bounds.size.width,140)];
-  occluder.backgroundColor=UIColor.clearColor;occluder.userInteractionEnabled=YES;[window addSubview:occluder];
+  UIView *occluder=[[UIView alloc]initWithFrame:CGRectMake(0,MAX(0,host.bounds.size.height-140),host.bounds.size.width,140)];
+  occluder.backgroundColor=UIColor.clearColor;occluder.userInteractionEnabled=YES;[host addSubview:occluder];
   [controller viewDidLayoutSubviews];GS_GLASS_CHECK(!overlay.hidden&&nativeTabs.view.hidden&&[GSPhotosGlassSnapshot()[@"visibleOverlays"]unsignedIntegerValue]==0);
   [occluder removeFromSuperview];[controller viewDidLayoutSubviews];GS_GLASS_CHECK(!overlay.hidden&&!nativeTabs.view.hidden&&[GSPhotosGlassSnapshot()[@"visibleOverlays"]unsignedIntegerValue]>=1);
 
@@ -185,7 +193,7 @@ static BOOL GSCheckPhotosGlass(GSPanel *panel,UIWindow *window){
   PHSTabBarController *bad=[PHSTabBarController new];[bad loadViewIfNeeded];[bad.floatingBottomTabBar removeArrangedSubview:bad.floatingSearchButton];[bad.floatingSearchButton removeFromSuperview];[bad.view addSubview:bad.floatingSearchButton];
   GSSetPhotosGlass(YES);[bad viewDidLayoutSubviews];GS_GLASS_CHECK([GSPhotosGlassSnapshot()[@"lastSkipReason"]isEqual:@"floating_bottom_bar_not_found"]);GSSetPhotosGlass(NO);
 
-  GSFixtureDetach(controller);
+  GSFixtureDetach(controller);host.hidden=YES;host.rootViewController=nil;
   NSLog(@"PASS independent full-screen UITabBarController overlay with UITab + pinned UISearchTab, no Google child-controller insertion, source routing, passthrough hit-testing, occlusion/offscreen suppression, visibility mirroring and restoration");
  } @finally {
   method_setImplementation(info,(IMP)GSOriginalBundleInfo);GSGlassFixturePhotosVersion=nil;
