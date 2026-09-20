@@ -118,8 +118,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
    CGFloat updated=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
    UITableViewCell *after=[panel.tableView cellForRowAtIndexPath:path];
-   NSLog(@"GSDIAG polling relative=%.2f updated=%.2f delta=%.2f rowY=%.2f offsetY=%.2f cell=%p accessory=%@ on=%d",relative,updated,updated-relative,[panel.tableView rectForRowAtIndexPath:path].origin.y,panel.tableView.contentOffset.y,after,NSStringFromClass(after.accessoryView.class),[(UISwitch *)after.accessoryView isOn]);
-   if(fabs(updated-relative)>1||![((UISwitch *)[panel.tableView cellForRowAtIndexPath:path].accessoryView)isOn]){Finish(NO,@"changed snapshot moved or removed the storage switch");return;}
+   if(fabs(updated-relative)>1||![((UISwitch *)after.accessoryView)isOn]){Finish(NO,[NSString stringWithFormat:@"changed snapshot moved or removed the storage switch (relative=%.2f updated=%.2f rowY=%.2f offsetY=%.2f cell=%p accessory=%@ on=%d)",relative,updated,[panel.tableView rectForRowAtIndexPath:path].origin.y,panel.tableView.contentOffset.y,after,NSStringFromClass(after.accessoryView.class),[(UISwitch *)after.accessoryView isOn]]);return;}
    Capture(window,@"settings-after-polling.png");next();
   },[NSDate dateWithTimeIntervalSinceNow:5]);
  });
