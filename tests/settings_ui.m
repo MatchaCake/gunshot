@@ -109,6 +109,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
+ CGFloat rowY0=[panel.tableView rectForRowAtIndexPath:path].origin.y,off0=panel.tableView.contentOffset.y,size0=panel.tableView.contentSize.height,insetB0=panel.tableView.adjustedContentInset.bottom;
  NSUInteger reads=atomic_load(&FixtureAccountReads);
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{
   CGFloat now=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
@@ -118,7 +119,9 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
   Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
    CGFloat updated=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
    UITableViewCell *after=[panel.tableView cellForRowAtIndexPath:path];
-   if(fabs(updated-relative)>1||![((UISwitch *)after.accessoryView)isOn]){Finish(NO,[NSString stringWithFormat:@"changed snapshot moved or removed the storage switch (relative=%.2f updated=%.2f rowY=%.2f offsetY=%.2f cell=%p accessory=%@ on=%d)",relative,updated,[panel.tableView rectForRowAtIndexPath:path].origin.y,panel.tableView.contentOffset.y,after,NSStringFromClass(after.accessoryView.class),[(UISwitch *)after.accessoryView isOn]]);return;}
+   if(fabs(updated-relative)>1||![((UISwitch *)after.accessoryView)isOn]){
+    NSIndexPath *anchor=panel.tableView.indexPathsForVisibleRows.firstObject;
+    Finish(NO,[NSString stringWithFormat:@"changed snapshot moved or removed the storage switch (before rowY=%.2f off=%.2f size=%.2f insetB=%.2f | after rowY=%.2f off=%.2f size=%.2f insetB=%.2f insetT=%.2f | anchor=%ld-%ld anchorY=%.2f on=%d)",rowY0,off0,size0,insetB0,[panel.tableView rectForRowAtIndexPath:path].origin.y,panel.tableView.contentOffset.y,panel.tableView.contentSize.height,panel.tableView.adjustedContentInset.bottom,panel.tableView.adjustedContentInset.top,(long)anchor.section,(long)anchor.row,[panel.tableView rectForRowAtIndexPath:anchor].origin.y,[(UISwitch *)after.accessoryView isOn]]);return;}
    Capture(window,@"settings-after-polling.png");next();
   },[NSDate dateWithTimeIntervalSinceNow:5]);
  });
