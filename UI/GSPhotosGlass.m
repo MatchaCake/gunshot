@@ -170,6 +170,7 @@ static BOOL GSControllerTreeHasPresentedOverlay(UIViewController *controller,UIW
 }
 
 static BOOL GSHostSourceVisible(GSPhotosGlassPair *pair,UIWindow *hostWindow){
+ NSLog(@"GSDIAG hostVisible state=%ld ctrlWin=%d ctrlHidden=%d barWin=%d barHidden=%d barAlpha=%.2f presented=%d frontmost=%d",(long)UIApplication.sharedApplication.applicationState,pair.controller.view.window==hostWindow,pair.controller.view.hidden,pair.bar.window==hostWindow,pair.bar.hidden,pair.bar.alpha,GSControllerTreeHasPresentedOverlay(hostWindow.rootViewController,hostWindow),GSBarIsFrontmost(pair,hostWindow));
  if(!pair||!hostWindow||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return NO;
  if(pair.controller.view.window!=hostWindow||pair.controller.view.hidden||pair.controller.view.alpha<=0.01)return NO;
  if(pair.bar.window!=hostWindow||pair.bar.hidden||pair.bar.alpha<=0.01)return NO;
