@@ -55,8 +55,11 @@ static BOOL GSHasConfirmedOriginal(id controller){
  // Enum descriptor: Unknown=0, Yes=1, No=2, Maybe=3. Maybe is not Yes.
  GSCount(originals==1?@"serverOriginal":originals==2?@"serverNotOriginal":@"serverOriginalUnknown");
  if(originals!=1||((BOOL(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"isPartialBackup")))return NO;
+ // hasOriginalBytes is the server's own original-bytes model. Quota-free Pixel
+ // uploads report Yes with a non-Standard storagePolicy, so the policy value is
+ // recorded for diagnostics but does not gate the correction.
  unsigned char policy=((unsigned char(*)(id,SEL))objc_msgSend)(photo,NSSelectorFromString(@"storagePolicy"));
- if(policy!=1)return NO; // Only the Standard / Storage Saver label mismatch.
+ GSCount([NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy]);
  return YES;
 }
 // 7.20.2 builds a native label/image content model instead of BackupStatusData.

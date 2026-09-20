@@ -96,7 +96,16 @@ int main(void){@autoreleasepool{
  photo.isPartialBackup=NO;details.isBackedUp=NO;assert([details getBackupStatusModelData]==details.original);
  // Server-confirmed originals correct the label without the backup-routing toggle or its symbols.
  details.isBackedUp=YES;assert([details getBackupStatusModelData]!=details.original);
- photo.storagePolicy=2;assert([details getBackupStatusModelData]==details.original);photo.storagePolicy=1;
+ // Quota-free uploads report hasOriginalBytes=Yes with a non-Standard storagePolicy;
+ // the correction depends only on the original-bytes model, and each observed policy
+ // value is counted for diagnostics.
+ for(unsigned char policy=0;policy<4;policy++){
+  photo.storagePolicy=policy;id result=[details getBackupStatusModelData];
+  assert(result!=details.original);assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);
+  NSString *policyKey=[NSString stringWithFormat:@"serverStoragePolicy%u",(unsigned)policy];
+  assert([GSPhotosIntegrationSnapshot()[policyKey]unsignedIntegerValue]>=1);
+ }
+ photo.storagePolicy=1;
  assert([details.original.backupStatusSubtitle isEqual:@"保存容量の節約"]); // No mutation of native state.
 #ifdef GS_TEST_LEGACY
  assert([details contentViewModelWithTitle:details.original.backupStatus subtitle:details.original.backupStatusSubtitle subtitleContainsHTML:YES image:@"native-icon"]==details.original);
@@ -109,6 +118,6 @@ int main(void){@autoreleasepool{
  GSRefreshNativeLibrary();GSRefreshNativeLibrary();
  Drain(^BOOL{return current.fetches==2;});assert(other.fetches==1); // Coalesced and account-bound.
  viewingAccount=@"other";GSRefreshNativeLibrary();Drain(^BOOL{return other.fetches==2;});assert(current.fetches==2);
- NSLog(@"PASS server-confirmed original label, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync");
+ NSLog(@"PASS server-confirmed original label for every storage policy, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync");
  return 0;
 }}

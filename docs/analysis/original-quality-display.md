@@ -30,9 +30,17 @@ Pixel XL は Pixel 2 ではなく初代 Pixel 系です。今回 profile や課�
 ## 表示補正の条件
 
 純正の詳細画面が既にバックアップ済みと判断し、サーバーモデルが
-hasOriginalBytes=Yes、storagePolicy=Standard、部分バックアップではない場合だけ、
+hasOriginalBytes=Yes、部分バックアップではない場合に、
 詳細画面の subtitle を「オリジナル画質（原本データあり）」にします。
 容量を示す backupStatus は純正の値をそのまま維持します。
+
+以前は storagePolicy=Standard の場合だけに限定していましたが、容量非消費の
+Pixel 系アップロードでは hasOriginalBytes=Yes でも storagePolicy が Standard
+以外になり、「保存容量の節約」のまま残る事例を実機診断で確認しました
+（v0.2.4 で serverOriginal は計上されるのに補正が発生しない）。
+hasOriginalBytes はサーバー自身の原本モデルであり、storagePolicy は容量課金の
+ポリシーです。判定は原本モデルだけに依存し、観測した storagePolicy 値は
+serverStoragePolicy&lt;N&gt; として診断に記録します。
 
 バックアップ連携（純正バックアップの GoToHP 経由）の有効・無効は表示補正に
 影響しません。判定はサーバーが返す原本情報だけに依存するため、GoToHP 画面や
@@ -46,7 +54,7 @@ No / Unknown / Maybe、未バックアップ、部分バックアップは変更
 
 ## 診断
 
-- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、画質表示補正件数、差分同期要求件数。
+- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数。
 - completionMonitor.uploadSummary（jailed では runtime.uploadSummary にも表示）: デフォルト画質、各ジョブの画質別・状態別件数と対応 profile、完了 revision。
 - uploadSummary の profile は送信ポリシーです。実メディアのサーバー側品質を一括で検証した意味ではありません。
 - アカウント、ファイル名、mediaKey、ハッシュ、トークンは追加診断に含めません。
