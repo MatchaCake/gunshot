@@ -20,6 +20,7 @@ static atomic_ulong FixtureNativeConnections;
 static atomic_int FixtureConcurrent=2;
 @interface GSPanel (GSFixturePolling)
 - (void)refresh;
+- (void)reloadTablePreservingPosition;
 - (void)chooseValueForControl:(NSInteger)control;
 - (void)sheet:(UIAlertController *)sheet;
 @end
@@ -106,6 +107,10 @@ static GSPanel *Panel(UIViewController *host){
 }
 static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(void)){
  NSIndexPath *path=[NSIndexPath indexPathForRow:1 inSection:6];
+ // Rows jumped over by scrollToRowAtIndexPath keep estimated heights until the next
+ // reload re-measures them, which would shift the baseline captured below. Settle the
+ // whole table once so the positions compared across the refresh use actual heights.
+ [panel reloadTablePreservingPosition];
  [panel.tableView layoutIfNeeded];
  UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
