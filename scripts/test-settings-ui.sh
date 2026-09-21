@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Build against the newest installed Xcode SDK. Google Photos ships built with the
+# current iOS SDK, and UIKit gates Liquid Glass behaviours (such as iPhone action
+# sheets exposing popoverPresentationController for anchoring) on the linked-on SDK,
+# so a fixture built with an older default toolchain exercises the wrong codepaths.
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+ newest_xcode=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -t_ -k2 -V | tail -1)
+ if [ -n "$newest_xcode" ]; then export DEVELOPER_DIR="$newest_xcode/Contents/Developer"; fi
+fi
+echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-$(xcode-select -p)} ($(xcrun --sdk iphonesimulator --show-sdk-version 2>/dev/null || echo unknown) simulator SDK)"
 app=.build/settings-smoke/GoToHPSettingsFixture.app
 mkdir -p "$app" .build/settings-ui-results
 mkdir -p .build/runtime-fixture

@@ -20,6 +20,7 @@ static atomic_ulong FixtureNativeConnections;
 static atomic_int FixtureConcurrent=2;
 @interface GSPanel (GSFixturePolling)
 - (void)refresh;
+- (void)reloadTablePreservingPosition;
 - (void)chooseValueForControl:(NSInteger)control;
 - (void)sheet:(UIAlertController *)sheet;
 @end
@@ -103,9 +104,29 @@ static GSPanel *Panel(UIViewController *host){
  if(![nav isKindOfClass:UINavigationController.class])return nil;
  id top=((UINavigationController *)nav).topViewController;return [top isKindOfClass:GSPanel.class]?top:nil;
 }
+static void CheckRealSheetPresentation(GSPanel *panel,void(^next)(void)){
+ NSIndexPath *path=[NSIndexPath indexPathForRow:2 inSection:2];
+ [panel.tableView scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
+ [panel.tableView layoutIfNeeded];UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
+ [panel tableView:panel.tableView didSelectRowAtIndexPath:path];
+ Await(^BOOL{return [panel.presentedViewController isKindOfClass:UIAlertController.class];},^{
+  UIAlertController *sheet=(UIAlertController *)panel.presentedViewController;
+  if(sheet.preferredStyle!=UIAlertControllerStyleActionSheet||sheet.actions.count<11){Finish(NO,@"real retry action sheet was not presented");return;}
+  if(@available(iOS 26.0,*)){
+   UIPopoverPresentationController *popover=sheet.popoverPresentationController;
+   if(sheet.modalPresentationStyle!=UIModalPresentationPopover||!popover||!cell||popover.sourceView!=cell||!CGRectEqualToRect(popover.sourceRect,cell.bounds)){Finish(NO,@"real action sheet did not retain its Liquid Glass row anchor");return;}
+  }
+  [panel dismissViewControllerAnimated:NO completion:next];
+ },[NSDate dateWithTimeIntervalSinceNow:5]);
+}
 static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(void)){
  NSIndexPath *path=[NSIndexPath indexPathForRow:1 inSection:6];
- [panel.tableView layoutIfNeeded];
+ // Offscreen rows keep estimated heights until a reload re-measures them, so the first
+ // position-preserving reload after the scroll still shifts geometry. Run the same
+ // reload the refresh path uses until the layout reaches its fixed point, then capture
+ // the baseline the later reload will be compared against.
+ [panel reloadTablePreservingPosition];[panel.tableView layoutIfNeeded];
+ [panel reloadTablePreservingPosition];[panel.tableView layoutIfNeeded];
  UITableViewCell *cell=[panel.tableView cellForRowAtIndexPath:path];
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
@@ -245,7 +266,10 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
        Await(^BOOL{return Panel(root).viewIfLoaded.window!=nil&&[GSUploadMonitorSnapshot()[@"reachable"]boolValue]&&GSEmbeddedRuntimeSnapshot()[@"uploadSummary"]!=nil;},^{
         // An empty queue has revision zero and must not manufacture completion.
         if(NativeRefreshes){Finish(NO,@"empty queue incorrectly announced completion");return;}
-        Finish(YES,@"detached, nested, repeated and nil-host presentation; stationary polling and changed-snapshot anchor retained; settings rendered; real jailed runtime online, launch completion observer active and authorization snapshot nonblocking");},deadline);
+        CheckRealSheetPresentation(Panel(root),^{
+         Finish(YES,@"detached, nested, repeated and nil-host presentation; real Liquid Glass action-sheet presentation/dismissal; stationary polling and changed-snapshot anchor retained; settings rendered; real jailed runtime online, launch completion observer active and authorization snapshot nonblocking");
+        });
+       },deadline);
       }];
      });
     },deadline);
