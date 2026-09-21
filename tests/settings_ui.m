@@ -122,7 +122,7 @@ static void CheckRealSheetPresentation(GSPanel *panel,void(^next)(void)){
 static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(void)){
  NSIndexPath *path=[NSIndexPath indexPathForRow:1 inSection:6];
  // Offscreen rows keep estimated heights until a reload re-measures them, so the first
- // position-preserving reload after the scroll still shifted geometry. Run the same
+ // position-preserving reload after the scroll still shifts geometry. Run the same
  // reload the refresh path uses until the layout reaches its fixed point, then capture
  // the baseline the later reload will be compared against.
  [panel reloadTablePreservingPosition];[panel.tableView layoutIfNeeded];
