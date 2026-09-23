@@ -54,6 +54,56 @@ No / Unknown / Maybe、未バックアップ、部分バックアップは変更
 設定が original という理由だけで成功・画質表示を変更する処理はありません。
 サーバーから原本情報が取得できない写真では、元の表示のままになる場合があります。
 
+## 詳細スタックの行（v0.2.5 実機診断後の修正）
+
+v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されているにもかかわらず、
+詳細画面は「保存容量の節約」のままでした。getBackupStatusModelData の subtitle 置換は
+実行されていますが、7.92.0 の詳細画面が表示する行はそこから作られていません。
+7.92.0 の索引では、詳細コントローラに次の別経路があります。
+
+| selector | ABI | 役割 |
+| --- | --- | --- |
+| `createStackViewModelsForExtendedPhoto:preferredMediaItem:` | `@32@0:8@16@24` | 詳細スタック全体を構築 |
+| `createBackupViewModel:mediaItem:serverPhoto:localAsset:storeResult:` | `@56@0:8@16@24@32@40@48` | バックアップ行（`PHSOneUpInfoPanelDetailsStackViewModel`）を構築 |
+| `updateBackupStatusUI` | `v16@0:8` | `backupStatusViewModelID` で追跡している行を後から更新 |
+| `PHSExtendedPhoto.serverStoragePolicy` | `i16@0:8` | クライアント側 enum。`quotaTransparencyServerStoragePolicy` flag と対応 |
+
+行の画質文言は、この工場が `PHSServerPhoto.storagePolicy`（または派生する
+`serverStoragePolicy`）から自分で組み立てています。BackupStatusData の subtitle は
+使いません。そのため置換件数が増えても表示は変わりませんでした。
+
+### 修正
+
+1. **表示スコープ**: 上記 3 つの工場が同一スレッドで実行中に限り、
+   `PHSServerPhoto.storagePolicy` は原本確認済み（hasOriginalBytes=Yes、部分
+   バックアップでない）の写真について Standard（1）を返します。純正の文言と
+   ローカライズがそのまま使われます。スコープはコントローラが `isBackedUp` を
+   返す場合だけ開きます。保存値、同期、アップロード、他の画面、我々自身の
+   診断読取（`serverStoragePolicy<N>`）には影響しません。
+2. **文字列フォールバック**: 工場が返した行の title / attributes に、同じ
+   コントローラの純正 subtitle（getBackupStatusModelData の元実装から取得）と
+   同じ文言が含まれる場合、その部分だけを「オリジナル画質（原本データあり）」に
+   置き換えます。Google の文字列キーや言語の決め打ちはしません。
+   `updateBackupStatusUI` の後も追跡中の行に同じ処理を行います。
+
+No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
+発生しません。`PHSServerPhoto.storagePolicy` の ABI が一致しない場合は 1 を
+省略し 2 だけを行います。
+
+### 診断
+
+- `stackQualityAvailable`: 行工場と原本 ABI が一致し hook を設置したか。
+- `stackBackupRows` / `stackBackupUpdates`: 行構築と後更新の回数。`stackRowClasses` は観測した行クラス名（最大 8 件）。
+- `displayPolicyReads` / `displayPolicyOverrides`: スコープ内の storagePolicy 読取と Standard への置換件数。
+- `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数と観測値。どの値から文言が作られているかの切り分け用。
+- `stackRowCorrected`: 文字列フォールバックが行を書き換えた件数。
+
+`displayPolicyOverrides` が増えて `stackRowCorrected` が 0 なら 1 の経路、逆なら 2 の
+経路で補正されています。どちらも 0 で表示が変わらない場合は、上記の読取件数から
+文言の出所を特定します。テストは storagePolicy 由来、serverStoragePolicy 由来、
+純正 subtitle 複写の 3 種の文言源、スコープ外の読取が純正値であること、
+入れ子の診断読取が純正値を数えること、未バックアップ・部分・No での不変を検証します。
+
 ## 差分同期の信頼性
 
 完了通知の反映は、アプリ自身の PHSUserItemsSynchronizer に fetchData を依頼して
@@ -70,7 +120,7 @@ No / Unknown / Maybe、未バックアップ、部分バックアップは変更
 
 ## 診断
 
-- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数、同期オブジェクト待ち件数（syncWaitingForAccount）。
+- photosIntegration: qualityAvailable / syncAvailable、原本 enum の観測件数、原本確認済み写真の storagePolicy 値別観測件数（serverStoragePolicy&lt;N&gt;）、画質表示補正件数、差分同期要求件数、同期オブジェクト待ち件数（syncWaitingForAccount）、詳細スタック行の件数（上記「詳細スタックの行」）。
 - completionMonitor.uploadSummary（jailed では runtime.uploadSummary にも表示）: デフォルト画質、各ジョブの画質別・状態別件数と対応 profile、完了 revision。
 - uploadSummary の profile は送信ポリシーです。実メディアのサーバー側品質を一括で検証した意味ではありません。
 - アカウント、ファイル名、mediaKey、ハッシュ、トークンは追加診断に含めません。

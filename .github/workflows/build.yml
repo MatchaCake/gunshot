@@ -154,6 +154,8 @@ jobs:
           .build/backup-requests-test
           clang -fobjc-arc -framework Foundation -Itests/native-shims UI/GSPhotosIntegration.m tests/photos_integration.m -o .build/photos-integration-test
           .build/photos-integration-test
+          clang -fobjc-arc -DGS_TEST_POLICY_ON_BASE=1 -framework Foundation -Itests/native-shims UI/GSPhotosIntegration.m tests/photos_integration.m -o .build/photos-integration-policy-test
+          .build/photos-integration-policy-test
           clang -fobjc-arc -framework Foundation UI/GSUploadDiagnostics.m tests/upload_diagnostics.m -o .build/upload-diagnostics-test
           .build/upload-diagnostics-test
           clang -fobjc-arc -framework Foundation UI/GSNativeAccount.m tests/native_account.m -o .build/native-account-test
