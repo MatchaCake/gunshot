@@ -131,9 +131,14 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
  if(!cell){Finish(NO,@"storage switch must be visible before polling test");return;}
  CGFloat relative=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
  NSUInteger reads=atomic_load(&FixtureAccountReads);
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+ // The 2s timer skips ticks while a poll is still in flight, and each poll crosses the
+ // real Go list request, so a loaded simulator runner can finish fewer than two polls in
+ // any fixed window. Wait for the polls themselves: refresh serialises on `refreshing`,
+ // so the third accounts read proves two complete unchanged polls reached the main queue.
+ Await(^BOOL{return atomic_load(&FixtureAccountReads)>=reads+3;},^{
   CGFloat now=[panel.tableView rectForRowAtIndexPath:path].origin.y-panel.tableView.contentOffset.y;
-  if(atomic_load(&FixtureAccountReads)<reads+2||[panel.tableView cellForRowAtIndexPath:path]!=cell||fabs(now-relative)>1){Finish(NO,@"unchanged timer polls replaced the switch or moved the settings list");return;}
+  if([panel.tableView cellForRowAtIndexPath:path]!=cell){Finish(NO,@"unchanged timer polls replaced the storage switch cell");return;}
+  if(fabs(now-relative)>1){Finish(NO,@"unchanged timer polls moved the settings list");return;}
   // A real changed snapshot still updates, retaining the visible row's position.
   atomic_store(&FixtureConcurrent,3);[panel refresh];
   Await(^BOOL{return [[[panel valueForKey:@"options"]objectForKey:@"concurrent"]intValue]==3;},^{
@@ -141,7 +146,7 @@ static void CheckStationaryPolling(GSPanel *panel,UIWindow *window,void(^next)(v
    if(fabs(updated-relative)>1||![((UISwitch *)[panel.tableView cellForRowAtIndexPath:path].accessoryView)isOn]){Finish(NO,@"changed snapshot moved or removed the storage switch");return;}
    Capture(window,@"settings-after-polling.png");next();
   },[NSDate dateWithTimeIntervalSinceNow:5]);
- });
+ },[NSDate dateWithTimeIntervalSinceNow:30]);
 }
 #include "photos_glass_fixture.h"
 @interface GSFixtureScene : UIResponder <UIWindowSceneDelegate>
