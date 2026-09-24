@@ -31,6 +31,14 @@ static id (*GSOriginalServiceInit)(id,SEL);
 static atomic_ulong GSServiceInits, GSFlowStatusCalls, GSFlowErrors, GSUsageRatioCalls, GSUpdateRatioCalls, GSAggregatorRefreshes;
 static atomic_long GSLastFlowStatus=-1;
 static NSString *GSLastFlowError;
+// The self-managed flag hands the storage card to Google One, and the aggregator
+// then excludes the Photos card. With the preference enabled the flag reads NO so
+// the native Photos card (shown through the getters above) stays in the menu.
+// The Swift wrapper and the ObjC Phenotype getter are both covered: Swift callers
+// may bypass the wrapper's ObjC entry point, never the generated ObjC class.
+static BOOL (*GSOriginalSelfManaged)(id,SEL), (*GSOriginalPhenotypeSelfManaged)(id,SEL);
+static atomic_ulong GSSelfManagedReads, GSPhenotypeSelfManagedReads, GSSelfManagedOverrides;
+static atomic_long GSNativeSelfManaged=-1, GSNativePhenotypeSelfManaged=-1;
 
 BOOL GSUnlimitedStorageEnabled(void){
  id value=[NSUserDefaults.standardUserDefaults objectForKey:GSStoragePreference];
@@ -56,7 +64,10 @@ NSDictionary *GSUnlimitedStorageSnapshot(void){
    @"menuCards":GSObservedMenuCards.array?:@[],@"aggregatorRefreshes":@(atomic_load(&GSAggregatorRefreshes))},
   @"googleOne":@{@"serviceInits":@(atomic_load(&GSServiceInits)),@"flowStatusCalls":@(atomic_load(&GSFlowStatusCalls)),
    @"lastFlowStatus":@(atomic_load(&GSLastFlowStatus)),@"flowErrors":@(atomic_load(&GSFlowErrors)),@"lastFlowError":GSLastFlowError?:NSNull.null,
-   @"usageRatioCalls":@(atomic_load(&GSUsageRatioCalls)),@"updateRatioCalls":@(atomic_load(&GSUpdateRatioCalls))}};}
+   @"usageRatioCalls":@(atomic_load(&GSUsageRatioCalls)),@"updateRatioCalls":@(atomic_load(&GSUpdateRatioCalls))},
+  @"selfManagedCard":@{@"wrapperReads":@(atomic_load(&GSSelfManagedReads)),@"nativeWrapper":@(atomic_load(&GSNativeSelfManaged)),
+   @"phenotypeReads":@(atomic_load(&GSPhenotypeSelfManagedReads)),@"nativePhenotype":@(atomic_load(&GSNativePhenotypeSelfManaged)),
+   @"overrides":@(atomic_load(&GSSelfManagedOverrides))}};}
 }
 static void GSStorageObserve(id object,NSMutableOrderedSet *classes){
  if(!object)return;NSString *name=NSStringFromClass(object_getClass(object));
@@ -151,6 +162,18 @@ static void GSStorageUpdateRatio(id object,SEL selector,double ratio){
 static void GSStorageAggregatorRefresh(id object,SEL selector){
  atomic_fetch_add(&GSAggregatorRefreshes,1);GSOriginalAggregatorRefresh(object,selector);
 }
+static BOOL GSStorageSelfManagedDisplay(BOOL original){
+ if(!original||!GSUnlimitedStorageEnabled())return original;
+ atomic_fetch_add(&GSSelfManagedOverrides,1);return NO;
+}
+static BOOL GSStorageSelfManaged(id object,SEL selector){
+ BOOL original=GSOriginalSelfManaged(object,selector);
+ atomic_fetch_add(&GSSelfManagedReads,1);atomic_store(&GSNativeSelfManaged,original);return GSStorageSelfManagedDisplay(original);
+}
+static BOOL GSStoragePhenotypeSelfManaged(id object,SEL selector){
+ BOOL original=GSOriginalPhenotypeSelfManaged(object,selector);
+ atomic_fetch_add(&GSPhenotypeSelfManagedReads,1);atomic_store(&GSNativePhenotypeSelfManaged,original);return GSStorageSelfManagedDisplay(original);
+}
 static void GSStorageCellUpdate(id object,SEL selector,id item){
  atomic_fetch_add(&GSCellUpdates,1);
  if(GSStorageItem(item))atomic_store(&GSRenderedState,((NSInteger(*)(id,SEL))objc_msgSend)(item,NSSelectorFromString(@"storageState")));
@@ -214,5 +237,9 @@ void GSInstallUnlimitedStorage(void){
  if(GSStorageMethod(service,@"updateStorageUsageRatio:","v24@0:8d16"))GSOriginalUpdateRatio=(void *)GSStorageReplace(service,NSSelectorFromString(@"updateStorageUsageRatio:"),(IMP)GSStorageUpdateRatio);
  Class bentoService=NSClassFromString(@"OGLBentoServiceImpl");
  if(GSStorageMethod(bentoService,@"bentoAccountMenuEnabled","B16@0:8"))GSOriginalBentoEnabled=(void *)GSStorageReplace(bentoService,NSSelectorFromString(@"bentoAccountMenuEnabled"),(IMP)GSStorageBentoEnabled);
+ Class flags=NSClassFromString(@"_TtC70googlemac_iPhone_Shared_OneGoogle_Common_Phenotype_Impl_BaseDeviceImpl27PhenotypeDeviceFlagBaseImpl");
+ if(GSStorageMethod(flags,@"enableSelfManagedStorageCard","B16@0:8"))GSOriginalSelfManaged=(void *)GSStorageReplace(flags,NSSelectorFromString(@"enableSelfManagedStorageCard"),(IMP)GSStorageSelfManaged);
+ Class phenotype=NSClassFromString(@"OGLPHTDeviceDynamicImpl");
+ if(GSStorageMethod(phenotype,@"StorageCard__enable_self_managed_storage_card","B16@0:8"))GSOriginalPhenotypeSelfManaged=(void *)GSStorageReplace(phenotype,NSSelectorFromString(@"StorageCard__enable_self_managed_storage_card"),(IMP)GSStoragePhenotypeSelfManaged);
  GSStorageInstalled=YES;GSStorageStatus=@"installed";
 }

@@ -88,6 +88,19 @@ static id MainBundle(id object,SEL selector){static id bundle;if(!bundle)bundle=
 - (void)googleOneService:(id)service didReceiveStorageUsageRatio:(double)ratio onPurchase:(BOOL)purchase{_ratios++;}
 - (void)updateStorageUsageRatio:(double)ratio{_ratios++;}
 @end
+// Self-managed flag: the Swift wrapper is registered at runtime under its mangled name.
+@interface GSSelfManagedFlags : NSObject
+- (BOOL)enableSelfManagedStorageCard;
+@end
+@implementation GSSelfManagedFlags
+- (BOOL)enableSelfManagedStorageCard{return YES;}
+@end
+@interface OGLPHTDeviceDynamicImpl : NSObject
+- (BOOL)StorageCard__enable_self_managed_storage_card;
+@end
+@implementation OGLPHTDeviceDynamicImpl
+- (BOOL)StorageCard__enable_self_managed_storage_card{return YES;}
+@end
 @interface GSStorageObserver : NSObject @end
 @implementation GSStorageObserver
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context{}
@@ -108,6 +121,7 @@ int main(int argc,const char **argv){@autoreleasepool{
  objc_registerClassPair(data);
  Class itemClass=nil,cellClass=nil;
  if(!bentoOnly){itemClass=RegisterClass(GSStorageFixtureItem.class,"OGLAccountSelectorStorageCardItem");cellClass=RegisterClass(GSStorageFixtureCell.class,"OGLAccountSelectorStorageCardCell");}
+ Class flagsClass=RegisterClass(GSSelfManagedFlags.class,"_TtC70googlemac_iPhone_Shared_OneGoogle_Common_Phenotype_Impl_BaseDeviceImpl27PhenotypeDeviceFlagBaseImpl");
  GSInstallUnlimitedStorage();assert(!GSUnlimitedStorageAvailable());
  Version=GSFixtureVersion;Executable=@"OtherApp";GSInstallUnlimitedStorage();assert(!GSUnlimitedStorageAvailable());Executable=@"GooglePhotos";
  GSInstallUnlimitedStorage();
@@ -154,6 +168,12 @@ int main(int argc,const char **argv){@autoreleasepool{
  [service didReceiveGoogleOneFlowStatus:4 error:[NSError errorWithDomain:@"GoogleOne" code:7 userInfo:@{NSLocalizedDescriptionKey:@"private"}]];
  [service googleOneService:nil didReceiveStorageUsageRatio:0.4 onPurchase:NO];[service updateStorageUsageRatio:0.4];
  assert(service.status==4&&service.ratios==2);
+ // Enabled: both self-managed reads return NO so the Photos card survives the
+ // aggregator. Disabled: native values pass through; the base class is untouched.
+ id flags=[flagsClass new];OGLPHTDeviceDynamicImpl *phenotype=[OGLPHTDeviceDynamicImpl new];
+ assert(![flags enableSelfManagedStorageCard]&&![phenotype StorageCard__enable_self_managed_storage_card]);
+ GSSetUnlimitedStorage(NO);assert([flags enableSelfManagedStorageCard]&&[phenotype StorageCard__enable_self_managed_storage_card]);GSSetUnlimitedStorage(YES);
+ assert([[GSSelfManagedFlags new]enableSelfManagedStorageCard]);
  NSDictionary *snapshot=GSUnlimitedStorageSnapshot(),*cardSource=snapshot[@"cardSource"],*googleOne=snapshot[@"googleOne"];
  assert([googleOne[@"serviceInits"]unsignedLongValue]==1&&[googleOne[@"flowStatusCalls"]unsignedLongValue]==1&&[googleOne[@"lastFlowStatus"]longValue]==4);
  assert([googleOne[@"flowErrors"]unsignedLongValue]==1&&[googleOne[@"lastFlowError"]isEqual:@"GoogleOne:7"]);
@@ -161,11 +181,14 @@ int main(int argc,const char **argv){@autoreleasepool{
  assert([cardSource[@"shouldShowCalls"]unsignedLongValue]==1&&[cardSource[@"shouldShowYes"]unsignedLongValue]==0);
  assert([cardSource[@"storageCardCalls"]unsignedLongValue]==1&&[cardSource[@"storageCardNonNil"]unsignedLongValue]==0&&[cardSource[@"quotaPresent"]unsignedLongValue]==1);
  assert([cardSource[@"photosCardReads"]unsignedLongValue]==1&&[cardSource[@"menuCards"]isEqual:@[@"photos:NSObject"]]&&[cardSource[@"bentoEnabled"]longValue]==-1);
+ NSDictionary *selfManaged=snapshot[@"selfManagedCard"];
+ assert([selfManaged[@"wrapperReads"]unsignedLongValue]==2&&[selfManaged[@"nativeWrapper"]longValue]==1);
+ assert([selfManaged[@"phenotypeReads"]unsignedLongValue]==2&&[selfManaged[@"nativePhenotype"]longValue]==1&&[selfManaged[@"overrides"]unsignedLongValue]==2);
  assert([snapshot[@"implementation"]isEqual:@"native-display-model-v4"]&&[snapshot[@"modelStateReads"]unsignedLongValue]>0&&[snapshot[@"modelTitleReads"]unsignedLongValue]>0);
  assert([snapshot[@"bentoControllers"]unsignedLongValue]==1&&[snapshot[@"archiveCalls"]unsignedLongValue]>=2);
  assert([snapshot[@"cardClasses"]containsObject:@"NSKVONotifying_OGLAccountMenuStorageCardData"]);
  assert([snapshot[@"cellUpdates"]unsignedLongValue]==(bentoOnly?0:1));
- NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses",@"cardSource",@"googleOne"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
+ NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses",@"cardSource",@"googleOne",@"selfManagedCard"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
  [defaults removeObjectForKey:@"GSShowUnlimitedStorage"];
  NSLog(@"PASS Swift model reads with %@; KVO, native backing fields, coder restoration, late resources, callbacks, on/off",bentoOnly?@"no legacy renderer":@"legacy renderer");
 }}

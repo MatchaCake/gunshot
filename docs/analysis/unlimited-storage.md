@@ -122,8 +122,9 @@ and the native `OGLStringResources` unlimited title. With the preference disable
 reads immediately return the original implementation's current values. Setters,
 backing fields, counters, callbacks, data sources, account quota and upload
 behavior are not changed. Native updates to the same cached model are preserved.
-No Swift ABI calls, hardcoded runtime offsets, feature-flag changes, substitute
-controller, or custom unlimited label are introduced.
+No Swift ABI calls, hardcoded runtime offsets, substitute controller, or custom
+unlimited label are introduced. The one flag read changed is the self-managed
+storage card flag described below, and only while the preference is enabled.
 
 Because the native model supports coding, `encodeWithCoder:` calls the original
 implementation with thread-local suppression of these getter overrides. Nested
@@ -167,3 +168,26 @@ provided the [native card screenshot](../images/unlimited-storage.png) and
 the READMEs. This confirms the displayed result in that user's setup. It does not
 establish account entitlement, quota treatment, all signing environments, or a
 complete on/off and native-action device test matrix.
+
+## Self-managed flag and the missing Bento card (device report, 7.92.0)
+
+On the reporting device the Photos source builds the card
+(`storageCardCalls = storageCardNonNil = 3`, `menuCards` contains
+`photos:OGLAccountMenuStorageCardData`) and the Bento aggregator refreshes
+(`aggregatorRefreshes = 2`), yet nothing renders (`modelStateReads = 0`,
+`cardClasses = []`). The Google One storage service never initializes
+(`serviceInits = 0`), and the aggregator's ObjC `accountMenuCardData` bridge is
+not read (`aggregatorCardReads = 0`): Bento reads the Swift getter that excludes
+the Photos storage card (see "Self-managed card path" above). The menu is left
+with no storage card from either source.
+
+The framework exposes `PhenotypeDeviceFlagBaseImpl.enableSelfManagedStorageCard`
+(`0x1da208`) and the Phenotype getter
+`OGLPHTDeviceDynamicImpl.StorageCard__enable_self_managed_storage_card`. The
+working hypothesis is that this flag selects the Google One card and gates the
+exclusion. While the preference is enabled both getters return NO, keeping the
+native Photos card so the model getters above can display it. Disabling the
+preference returns the native value. The link between the flag and the filter is
+**not yet confirmed on a device**; `selfManagedCard` in diagnostics records read
+counts, native values and overrides for both getters so the next report either
+confirms it or rules it out.
