@@ -200,6 +200,8 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    スコープ内の観測値（`displayServerPolicy<N>`）の記録だけを残します。
    この値から作られた節約文言は、8 の initializer 補正と文字列フォールバックが
    表示上で置き換えます。
+   **2026-09-25 に実機（7.92.0、jailed）で、置換撤去後も「オリジナル画質」表示が
+   維持されることを確認しました。**
 
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
