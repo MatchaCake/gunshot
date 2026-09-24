@@ -76,7 +76,8 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
 
 1. **表示スコープ**: 上記 3 つの工場が同一スレッドで実行中に限り、
    `PHSServerPhoto.storagePolicy` は原本確認済み（hasOriginalBytes=Yes、部分
-   バックアップでない）の写真について Standard（1）を返します。純正の文言と
+   バックアップでない）の写真についてオリジナル画質のポリシー（2。7 を参照。
+   6 回目の診断までは誤って Standard＝1 を返していた）を返します。純正の文言と
    ローカライズがそのまま使われます。スコープはコントローラが `isBackedUp` を
    返す場合だけ開きます。保存値、同期、アップロード、他の画面、我々自身の
    診断読取（`serverStoragePolicy<N>`）には影響しません。
@@ -144,7 +145,32 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
      メインスレッドでスコープ外でも、直近にスコープを開いたバックアップ済み
      詳細画面の写真で原本確認済みの場合に限り 3 を返します
      （`displayServerPolicyReadsOutside` / `displayServerPolicyOutsideOverrides`）。
-     他の写真、他スレッド、未バックアップの画面は純正値のままです。
+     他の写真、他スレッド、未バックアップの画面は純正値のままです（7 で変更）。
+
+7. **ポリシー対応の訂正と全インスタンス補正**: 6 回目の実機診断（22 行構築、
+   124 回走査）では `saver:` に「Original quality」「Express」が学習されていました。
+   学習は Standard（1）の subtitle を基準に差分を取るので、「Original quality」が
+   差分に出るということは policy 1 の文言はオリジナルではありません。写真の純正値は
+   2（`serverStoragePolicy2`）で純正 subtitle は「Original quality」、
+   GooglePhotos_GeneratedFramework には `photosConvertToStandardStoragePolicyRPC`
+   （「容量を解放」＝オリジナルを節約画質へ変換する RPC）があり、Standard は
+   Storage saver のポリシーです。1〜6 回目のビルドは行工場内で 1 を強制し、Google
+   自身のコードに節約文言を作らせていました。ただし 9/23 の最初の診断（v0.2.5、
+   上書きなし、純正値 2）でも表示は節約だったので、これが唯一の原因ではありません。
+   - 表示スコープ内の `storagePolicy` は原本確認済みなら 2 を返します（純正が 2 なら
+     無変更）。節約文言の学習も policy 2 の subtitle を基準にします。
+   - `serverStoragePolicy`: スコープ内 336 読取が全て置換され、スコープ外メイン
+     スレッドの読取は 0 件、それでも表示は節約でした。以前の規則が数えずに除外して
+     いた読者（同じ写真の別 `PHSExtendedPhoto` インスタンス、別スレッド）しか残り
+     ません。観測された唯一の節約値であり hasOriginalBytes はサーバー自身の原本
+     モデルなので、サーバー写真が原本確認済みの全インスタンスで全スレッド 3 を
+     返し、読取箇所を `displayServerPolicyReads` / `...ReadsOutside` /
+     `...ReadsOtherInstance` / `...ReadsOffMain` と対応する `...Overrides` で数えます。
+   - レイアウト時に `layout-rows[N]`（工場後に設定された expandedContent を含む）、
+     `info[N]`（`infoContentViewModels`）、`localAssetInfo`、`learnMoreLinks`
+     （`stackViewLearnMoreLinks`）の構造を `rowTexts`（上限 96）に記録し、
+     全モデルに文言補正を適用します。`PHSExtendedPhoto.needsFullBackup` の読取を
+     `needsFullBackup{Original,}{Yes,No}` で数えます（値は変更しません）。
 
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
@@ -154,7 +180,7 @@ No / Unknown / Maybe、未バックアップ、部分バックアップでは、
 
 - `stackQualityAvailable`: 行工場と原本 ABI が一致し hook を設置したか。
 - `stackBackupRows` / `stackBackupUpdates`: 行構築と後更新の回数。`stackRowClasses` は観測した行クラス名（最大 8 件）。
-- `displayPolicyReads` / `displayPolicyOverrides`: スコープ内の storagePolicy 読取と Standard への置換件数。
+- `displayPolicyReads` / `displayPolicyOverrides`: スコープ内の storagePolicy 読取とオリジナル（2）への置換件数。`displayPolicyReadsOutside` / `displayPolicyReadsOffMain` はスコープ外の純正読取。
 - `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayServerPolicyOverrides` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数、観測値、3 への置換件数。
 - `stackRowCorrected`: 文字列フォールバックが行を書き換えた件数。
 

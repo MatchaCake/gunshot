@@ -145,11 +145,14 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  // 7.92.0 on device: the subtitle is HTML with a help link, and its quality
  // words follow the storage policy read while it is built.
  if(self.labelSource==LabelFromHTMLSubtitle||self.labelSource==LabelFromDeviceStack){
-  // Device 4th build: a quota-free Pixel upload (policy 2) already reads
-  // original here; only another policy value produces the saver wording.
+  // Device: server policy 2 is the original-quality policy and a quota-free
+  // Pixel upload already reads original here; 1 (Standard) is Storage saver.
   unsigned char policy=NativePolicy(self.extendedPhoto.serverPhoto);
-  NSString *words=self.labelSource==LabelFromDeviceStack?(policy==3?DeviceSaverText:OriginalText):policy==1?OriginalText:SaverText;
-  NSString *html=[NSString stringWithFormat:@"バックアップ済み（%@） <a href=\"https://support.google.com/photos/answer/6220791\">詳細</a>",words];
+  NSString *words=self.labelSource==LabelFromDeviceStack?(policy==3?DeviceSaverText:OriginalText):policy==2?OriginalText:SaverText;
+  // The device-stack case is a different build with its own status wording;
+  // learned saver words are cached per native subtitle.
+  NSString *status=self.labelSource==LabelFromDeviceStack?@"保存済み":@"バックアップ済み";
+  NSString *html=[NSString stringWithFormat:@"%@（%@） <a href=\"https://support.google.com/photos/answer/6220791\">詳細</a>",status,words];
   return [[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:self.original.backupStatus backupStatusSubtitle:html learnMoreLink:@"native-link"];
  }
 #ifdef GS_TEST_LEGACY
@@ -164,8 +167,8 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  switch(self.labelSource){
   case LabelFromExtendedPhoto:return self.extendedPhoto.serverStoragePolicy==3?OriginalText:SaverText;
   case LabelFromNativeSubtitle:return self.original.backupStatusSubtitle;
-  case LabelFromHTMLSubtitle:return NativePolicy(photo)==1?OriginalText:SaverText;
-  default:return NativePolicy(photo)==1?OriginalText:SaverText;
+  case LabelFromHTMLSubtitle:return NativePolicy(photo)==2?OriginalText:SaverText;
+  default:return NativePolicy(photo)==2?OriginalText:SaverText;
  }
 }
 - (id)createBackupViewModel:(id)item mediaItem:(id)media serverPhoto:(id)photo localAsset:(id)asset storeResult:(id)store{
@@ -273,26 +276,40 @@ int main(void){@autoreleasepool{
  PHSOneUpInfoPanelDetailsStackViewModel *row=nil;
 #define BuildRow() (row=[details createStackViewModelsForExtendedPhoto:details.extendedPhoto preferredMediaItem:nil][0])
 #ifdef GS_TEST_POLICY_ON_BASE
- // The factory reads PHSServerPhoto.storagePolicy: native Standard wording, no substitution.
- details.labelSource=LabelFromServerPhoto;NSUInteger policy2=Count(@"serverStoragePolicy2"),policy1=Count(@"serverStoragePolicy1"),corrected=Count(@"stackRowCorrected");
+ // The factory reads PHSServerPhoto.storagePolicy. Device: 2 is the original
+ // policy and is read natively; 1 (Standard, the Storage saver policy) reads as
+ // 2 for a confirmed original inside the factory only. Builds 1-6 forced 1.
+ details.labelSource=LabelFromServerPhoto;NSUInteger policy2=Count(@"serverStoragePolicy2"),policy1=Count(@"serverStoragePolicy1"),corrected=Count(@"stackRowCorrected"),policyOverrides=Count(@"displayPolicyOverrides");
  BuildRow();
  assert([row.attributes[0]isEqual:OriginalText]&&[row.title isEqual:details.original.backupStatus]);
- assert(Count(@"displayPolicyOverrides")>=1&&Count(@"stackBackupRows")==1&&Count(@"stackRowCorrected")==corrected);
+ assert(Count(@"displayPolicyOverrides")==policyOverrides&&Count(@"stackBackupRows")==1&&Count(@"stackRowCorrected")==corrected);
  assert([GSPhotosIntegrationSnapshot()[@"stackRowClasses"]containsObject:@"PHSOneUpInfoPanelDetailsStackViewModel"]);
- assert(photo.storagePolicy==2); // Outside the factory the stored value is untouched.
  // The nested getBackupStatusModelData diagnostic saw the native value, not the display value.
- assert(Count(@"serverStoragePolicy2")==policy2+1&&Count(@"serverStoragePolicy1")==policy1);
+ assert(photo.storagePolicy==2&&Count(@"serverStoragePolicy2")==policy2+1&&Count(@"serverStoragePolicy1")==policy1);
+ photo.storagePolicy=1;BuildRow();
+ assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayPolicyOverrides")>policyOverrides&&Count(@"stackRowCorrected")==corrected);
+ assert(photo.storagePolicy==1&&Count(@"serverStoragePolicy1")==policy1+1); // Stored value untouched outside the factory.
+ photo.storagePolicy=2;
 #endif
  // The factory reads the stored client enum through PHSExtendedPhoto.serverStoragePolicy
  // (device: displayServerPolicy1 while storagePolicy was already overridden).
  details.labelSource=LabelFromExtendedPhoto;NSUInteger textFixes=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayServerPolicyReads")>=1&&Count(@"displayServerPolicyOverrides")>=1&&Count(@"stackRowCorrected")==textFixes);
- // Outside the scope: main-thread (display) reads follow the correction; other threads stay native.
+ // Outside the scope (device: the SwiftUI stack renders after the factories and
+ // its reads were never counted), the correction holds for every instance of a
+ // confirmed original on every thread, and each read site is counted.
  assert(details.extendedPhoto.serverStoragePolicy==3&&Count(@"displayServerPolicyOutsideOverrides")>=1);
+ PHSExtendedPhoto *twin=[PHSExtendedPhoto new];twin.serverPhoto=photo;twin.serverStoragePolicy=1;
+ assert(twin.serverStoragePolicy==3&&Count(@"displayServerPolicyReadsOtherInstance")>=1&&Count(@"displayServerPolicyOtherInstanceOverrides")>=1);
  __block int background=0;dispatch_group_t group=dispatch_group_create();
  dispatch_group_async(group,dispatch_get_global_queue(0,0),^{background=details.extendedPhoto.serverStoragePolicy;});
+ dispatch_group_wait(group,DISPATCH_TIME_FOREVER);
+ assert(background==3&&Count(@"displayServerPolicyReadsOffMain")>=1&&Count(@"displayServerPolicyOffMainOverrides")>=1);
+ // Not an original: native on every site.
+ photo.hasOriginalBytes=2;assert(details.extendedPhoto.serverStoragePolicy==1&&twin.serverStoragePolicy==1);
+ dispatch_group_async(group,dispatch_get_global_queue(0,0),^{background=details.extendedPhoto.serverStoragePolicy;});
  dispatch_group_wait(group,DISPATCH_TIME_FOREVER);assert(background==1);
- photo.hasOriginalBytes=2;assert(details.extendedPhoto.serverStoragePolicy==1);photo.hasOriginalBytes=1;
+ photo.hasOriginalBytes=1;
  // The factory copies the native subtitle wording: the row text is replaced, the quota title kept.
  details.labelSource=LabelFromNativeSubtitle;NSUInteger corrections=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&[row.title isEqual:details.original.backupStatus]);
@@ -301,17 +318,25 @@ int main(void){@autoreleasepool{
  [details updateBackupStatusUI];
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&Count(@"stackBackupUpdates")>=1&&Count(@"stackRowCorrected")==corrections+2);
  // No / partial / not backed up leave the native row and never override the policy.
+ // The photo sits on the saver policy so the native row wording is saver.
+ photo.storagePolicy=1;
  NSUInteger overrides=Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides");corrections=Count(@"stackRowCorrected");
  for(LabelSource source=LabelFromServerPhoto;source<=LabelFromNativeSubtitle;source++){
   details.labelSource=source;
   photo.hasOriginalBytes=2;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
   photo.hasOriginalBytes=1;photo.isPartialBackup=YES;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
-  photo.isPartialBackup=NO;details.isBackedUp=NO;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
-  [details updateBackupStatusUI];assert([row.attributes[0]isEqual:SaverText]);
+  // Not backed up: no scope, no text correction. The client enum follows the
+  // server photo rather than the controller, so a photo the server holds in
+  // original reads original wherever it is shown.
+  photo.isPartialBackup=NO;details.isBackedUp=NO;BuildRow();
+  NSString *expected=source==LabelFromExtendedPhoto?OriginalText:SaverText;
+  assert([row.attributes[0]isEqual:expected]);
+  [details updateBackupStatusUI];assert([row.attributes[0]isEqual:expected]);
   details.isBackedUp=YES;
  }
  assert(Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides")==overrides&&Count(@"stackRowCorrected")==corrections);
  assert([details.original.backupStatusSubtitle isEqual:SaverText]);
+ photo.storagePolicy=2;
  // Layout pass: whatever structure renders the row, a visible label holding the
  // native quality wording is corrected after the details view lays out.
  assert([GSPhotosIntegrationSnapshot()[@"panelLayoutAvailable"]boolValue]);
@@ -341,14 +366,16 @@ int main(void){@autoreleasepool{
  details.isBackedUp=YES;details.viewIfLoaded=nil;
 #ifdef GS_TEST_POLICY_ON_BASE
  // HTML subtitle (device 2026-09-24): the verbatim subtitle never occurs in the
- // row, whose words sit in a nested model cached at load. The differing part of
- // the native and display subtitles locates them; the link text stays.
+ // row, whose words sit in a nested model cached at load. The native subtitle
+ // already reads original (policy 2); the saver words are learned by rebuilding
+ // it with the other policies, and the link text stays.
  photo.storagePolicy=2;photo.hasOriginalBytes=1;details.labelSource=LabelFromHTMLSubtitle;details.frozenWords=YES;
  corrections=Count(@"stackRowCorrected");BuildRow();
  GSFixtureAttribute *words=row.attributes[0],*link=row.attributes[1];
  assert([words.text isEqual:fixed]&&[link.text isEqual:@"詳細"]&&Count(@"stackRowCorrected")==corrections+1);
  NSArray *rowTexts=GSPhotosIntegrationSnapshot()[@"rowTexts"];
- assert([rowTexts containsObject:[@"candidate: " stringByAppendingString:SaverText]]);
+ assert([rowTexts containsObject:[@"saver: " stringByAppendingString:SaverText]]);
+ assert(![rowTexts containsObject:[@"saver: " stringByAppendingString:OriginalText]]); // The baseline is the original policy.
  assert([rowTexts containsObject:[@"row.attributes[0].text<str>: " stringByAppendingString:SaverText]]);
  for(NSString *entry in rowTexts)assert(![entry containsString:@"support.google.com"]);
  [details updateBackupStatusUI];assert([words.text isEqual:fixed]&&[link.text isEqual:@"詳細"]);
@@ -359,9 +386,9 @@ int main(void){@autoreleasepool{
  assert([htmlLabel.text isEqual:fixedLine]);
  BOOL recorded=NO;for(NSString *entry in GSPhotosIntegrationSnapshot()[@"rowTexts"])if([entry hasPrefix:@"candidate: "]&&[entry containsString:@"<a>詳細<a>"])recorded=YES;
  assert(recorded&&[GSPhotosIntegrationSnapshot()[@"panelViewClasses"]containsObject:@"UILabel"]);
- // Not an original: the nested words stay native.
- photo.hasOriginalBytes=2;details.frozenWords=NO;BuildRow();assert([[row.attributes[0] text]isEqual:SaverText]);
- photo.hasOriginalBytes=1;details.labelSource=LabelFromServerPhoto;details.viewIfLoaded=nil;
+ // Not an original on the saver policy: the nested words stay native.
+ photo.hasOriginalBytes=2;photo.storagePolicy=1;details.frozenWords=NO;BuildRow();assert([[row.attributes[0] text]isEqual:SaverText]);
+ photo.hasOriginalBytes=1;photo.storagePolicy=2;details.labelSource=LabelFromServerPhoto;details.viewIfLoaded=nil;
  // Device 4th build: the native subtitle already reads original, and the saver
  // words are in a non-backup row. The probe learns them from the app's own
  // subtitle for another policy, and every assigned row is corrected.
