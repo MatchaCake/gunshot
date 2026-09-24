@@ -76,6 +76,18 @@ static id MainBundle(id object,SEL selector){static id bundle;if(!bundle)bundle=
 - (id)accountMenuCardData{return @[[NSObject new]];}
 - (id)quota{return @"quota";}
 @end
+// Google One storage service reporting a failed flow: probes pass through.
+@interface OGLGStorageCardServiceImpl : NSObject
+@property(nonatomic) int status;@property(nonatomic) NSUInteger ratios;
+- (void)didReceiveGoogleOneFlowStatus:(int)status error:(NSError *)error;
+- (void)googleOneService:(id)service didReceiveStorageUsageRatio:(double)ratio onPurchase:(BOOL)purchase;
+- (void)updateStorageUsageRatio:(double)ratio;
+@end
+@implementation OGLGStorageCardServiceImpl
+- (void)didReceiveGoogleOneFlowStatus:(int)status error:(NSError *)error{_status=status;}
+- (void)googleOneService:(id)service didReceiveStorageUsageRatio:(double)ratio onPurchase:(BOOL)purchase{_ratios++;}
+- (void)updateStorageUsageRatio:(double)ratio{_ratios++;}
+@end
 @interface GSStorageObserver : NSObject @end
 @implementation GSStorageObserver
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context{}
@@ -138,7 +150,14 @@ int main(int argc,const char **argv){@autoreleasepool{
  assert([[OGLBentoAccountMenuFactory new]makeBentoAccountMenuViewController]);
  PHSMyAccountMenuDataSource *source=[PHSMyAccountMenuDataSource new];
  assert(![source shouldShowStorageCard]&&![source storageCardData]&&[[source accountMenuCardData]count]==1);
- NSDictionary *snapshot=GSUnlimitedStorageSnapshot(),*cardSource=snapshot[@"cardSource"];
+ OGLGStorageCardServiceImpl *service=[OGLGStorageCardServiceImpl new];
+ [service didReceiveGoogleOneFlowStatus:4 error:[NSError errorWithDomain:@"GoogleOne" code:7 userInfo:@{NSLocalizedDescriptionKey:@"private"}]];
+ [service googleOneService:nil didReceiveStorageUsageRatio:0.4 onPurchase:NO];[service updateStorageUsageRatio:0.4];
+ assert(service.status==4&&service.ratios==2);
+ NSDictionary *snapshot=GSUnlimitedStorageSnapshot(),*cardSource=snapshot[@"cardSource"],*googleOne=snapshot[@"googleOne"];
+ assert([googleOne[@"serviceInits"]unsignedLongValue]==1&&[googleOne[@"flowStatusCalls"]unsignedLongValue]==1&&[googleOne[@"lastFlowStatus"]longValue]==4);
+ assert([googleOne[@"flowErrors"]unsignedLongValue]==1&&[googleOne[@"lastFlowError"]isEqual:@"GoogleOne:7"]);
+ assert([googleOne[@"usageRatioCalls"]unsignedLongValue]==1&&[googleOne[@"updateRatioCalls"]unsignedLongValue]==1);
  assert([cardSource[@"shouldShowCalls"]unsignedLongValue]==1&&[cardSource[@"shouldShowYes"]unsignedLongValue]==0);
  assert([cardSource[@"storageCardCalls"]unsignedLongValue]==1&&[cardSource[@"storageCardNonNil"]unsignedLongValue]==0&&[cardSource[@"quotaPresent"]unsignedLongValue]==1);
  assert([cardSource[@"photosCardReads"]unsignedLongValue]==1&&[cardSource[@"menuCards"]isEqual:@[@"photos:NSObject"]]&&[cardSource[@"bentoEnabled"]longValue]==-1);
@@ -146,7 +165,7 @@ int main(int argc,const char **argv){@autoreleasepool{
  assert([snapshot[@"bentoControllers"]unsignedLongValue]==1&&[snapshot[@"archiveCalls"]unsignedLongValue]>=2);
  assert([snapshot[@"cardClasses"]containsObject:@"NSKVONotifying_OGLAccountMenuStorageCardData"]);
  assert([snapshot[@"cellUpdates"]unsignedLongValue]==(bentoOnly?0:1));
- NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses",@"cardSource"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
+ NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses",@"cardSource",@"googleOne"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
  [defaults removeObjectForKey:@"GSShowUnlimitedStorage"];
  NSLog(@"PASS Swift model reads with %@; KVO, native backing fields, coder restoration, late resources, callbacks, on/off",bentoOnly?@"no legacy renderer":@"legacy renderer");
 }}

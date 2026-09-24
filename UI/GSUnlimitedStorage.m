@@ -24,6 +24,13 @@ static BOOL (*GSOriginalShouldShow)(id,SEL), (*GSOriginalBentoEnabled)(id,SEL);
 static id (*GSOriginalStorageCardData)(id,SEL), (*GSOriginalPhotosCards)(id,SEL), (*GSOriginalAggregatorCards)(id,SEL);
 static atomic_ulong GSShouldShowCalls, GSShouldShowYes, GSStorageCardCalls, GSStorageCardNonNil, GSQuotaPresent, GSPhotosCardReads, GSAggregatorCardReads;
 static atomic_long GSBentoEnabled=-1;
+// Passive Google One storage-service probes: the Bento aggregator drops the
+// Photos storage card, so the visible card depends on this native service.
+static void (*GSOriginalFlowStatus)(id,SEL,int,id), (*GSOriginalUsageRatio)(id,SEL,id,double,BOOL), (*GSOriginalUpdateRatio)(id,SEL,double), (*GSOriginalAggregatorRefresh)(id,SEL);
+static id (*GSOriginalServiceInit)(id,SEL);
+static atomic_ulong GSServiceInits, GSFlowStatusCalls, GSFlowErrors, GSUsageRatioCalls, GSUpdateRatioCalls, GSAggregatorRefreshes;
+static atomic_long GSLastFlowStatus=-1;
+static NSString *GSLastFlowError;
 
 BOOL GSUnlimitedStorageEnabled(void){
  id value=[NSUserDefaults.standardUserDefaults objectForKey:GSStoragePreference];
@@ -46,7 +53,10 @@ NSDictionary *GSUnlimitedStorageSnapshot(void){
    @"storageCardCalls":@(atomic_load(&GSStorageCardCalls)),@"storageCardNonNil":@(atomic_load(&GSStorageCardNonNil)),
    @"quotaPresent":@(atomic_load(&GSQuotaPresent)),@"photosCardReads":@(atomic_load(&GSPhotosCardReads)),
    @"aggregatorCardReads":@(atomic_load(&GSAggregatorCardReads)),@"bentoEnabled":@(atomic_load(&GSBentoEnabled)),
-   @"menuCards":GSObservedMenuCards.array?:@[]}};}
+   @"menuCards":GSObservedMenuCards.array?:@[],@"aggregatorRefreshes":@(atomic_load(&GSAggregatorRefreshes))},
+  @"googleOne":@{@"serviceInits":@(atomic_load(&GSServiceInits)),@"flowStatusCalls":@(atomic_load(&GSFlowStatusCalls)),
+   @"lastFlowStatus":@(atomic_load(&GSLastFlowStatus)),@"flowErrors":@(atomic_load(&GSFlowErrors)),@"lastFlowError":GSLastFlowError?:NSNull.null,
+   @"usageRatioCalls":@(atomic_load(&GSUsageRatioCalls)),@"updateRatioCalls":@(atomic_load(&GSUpdateRatioCalls))}};}
 }
 static void GSStorageObserve(id object,NSMutableOrderedSet *classes){
  if(!object)return;NSString *name=NSStringFromClass(object_getClass(object));
@@ -120,6 +130,27 @@ static id GSStorageAggregatorCards(id object,SEL selector){
 static BOOL GSStorageBentoEnabled(id object,SEL selector){
  BOOL enabled=GSOriginalBentoEnabled(object,selector);atomic_store(&GSBentoEnabled,enabled);return enabled;
 }
+static id GSStorageServiceInit(id object,SEL selector){
+ atomic_fetch_add(&GSServiceInits,1);return GSOriginalServiceInit(object,selector);
+}
+static void GSStorageFlowStatus(id object,SEL selector,int status,id error){
+ atomic_fetch_add(&GSFlowStatusCalls,1);atomic_store(&GSLastFlowStatus,status);
+ // Domain and code only; never the description, user info or URLs.
+ if([error isKindOfClass:NSError.class]){
+  atomic_fetch_add(&GSFlowErrors,1);
+  @synchronized(GSStorageLock){GSLastFlowError=[NSString stringWithFormat:@"%@:%ld",[(NSError *)error domain],(long)[(NSError *)error code]];}
+ }
+ GSOriginalFlowStatus(object,selector,status,error);
+}
+static void GSStorageUsageRatio(id object,SEL selector,id service,double ratio,BOOL purchase){
+ atomic_fetch_add(&GSUsageRatioCalls,1);GSOriginalUsageRatio(object,selector,service,ratio,purchase);
+}
+static void GSStorageUpdateRatio(id object,SEL selector,double ratio){
+ atomic_fetch_add(&GSUpdateRatioCalls,1);GSOriginalUpdateRatio(object,selector,ratio);
+}
+static void GSStorageAggregatorRefresh(id object,SEL selector){
+ atomic_fetch_add(&GSAggregatorRefreshes,1);GSOriginalAggregatorRefresh(object,selector);
+}
 static void GSStorageCellUpdate(id object,SEL selector,id item){
  atomic_fetch_add(&GSCellUpdates,1);
  if(GSStorageItem(item))atomic_store(&GSRenderedState,((NSInteger(*)(id,SEL))objc_msgSend)(item,NSSelectorFromString(@"storageState")));
@@ -175,6 +206,12 @@ void GSInstallUnlimitedStorage(void){
  if(GSStorageMethod(photos,@"accountMenuCardData","@16@0:8"))GSOriginalPhotosCards=(void *)GSStorageReplace(photos,NSSelectorFromString(@"accountMenuCardData"),(IMP)GSStoragePhotosCards);
  Class aggregator=NSClassFromString(@"_TtC102googlemac_iPhone_Shared_OneGoogle_AccountSelector_Cards_Implementation_OGLAggregatorCardDataSourceImpl31OGLAggregatorCardDataSourceImpl");
  if(GSStorageMethod(aggregator,@"accountMenuCardData","@16@0:8"))GSOriginalAggregatorCards=(void *)GSStorageReplace(aggregator,NSSelectorFromString(@"accountMenuCardData"),(IMP)GSStorageAggregatorCards);
+ if(GSStorageMethod(aggregator,@"refreshAccountMenuCardData","v16@0:8"))GSOriginalAggregatorRefresh=(void *)GSStorageReplace(aggregator,NSSelectorFromString(@"refreshAccountMenuCardData"),(IMP)GSStorageAggregatorRefresh);
+ Class service=NSClassFromString(@"OGLGStorageCardServiceImpl");
+ if(GSStorageMethod(service,@"init","@16@0:8"))GSOriginalServiceInit=(void *)GSStorageReplace(service,@selector(init),(IMP)GSStorageServiceInit);
+ if(GSStorageMethod(service,@"didReceiveGoogleOneFlowStatus:error:","v28@0:8i16@20"))GSOriginalFlowStatus=(void *)GSStorageReplace(service,NSSelectorFromString(@"didReceiveGoogleOneFlowStatus:error:"),(IMP)GSStorageFlowStatus);
+ if(GSStorageMethod(service,@"googleOneService:didReceiveStorageUsageRatio:onPurchase:","v36@0:8@16d24B32"))GSOriginalUsageRatio=(void *)GSStorageReplace(service,NSSelectorFromString(@"googleOneService:didReceiveStorageUsageRatio:onPurchase:"),(IMP)GSStorageUsageRatio);
+ if(GSStorageMethod(service,@"updateStorageUsageRatio:","v24@0:8d16"))GSOriginalUpdateRatio=(void *)GSStorageReplace(service,NSSelectorFromString(@"updateStorageUsageRatio:"),(IMP)GSStorageUpdateRatio);
  Class bentoService=NSClassFromString(@"OGLBentoServiceImpl");
  if(GSStorageMethod(bentoService,@"bentoAccountMenuEnabled","B16@0:8"))GSOriginalBentoEnabled=(void *)GSStorageReplace(bentoService,NSSelectorFromString(@"bentoAccountMenuEnabled"),(IMP)GSStorageBentoEnabled);
  GSStorageInstalled=YES;GSStorageStatus=@"installed";
