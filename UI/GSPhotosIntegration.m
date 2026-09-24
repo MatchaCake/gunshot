@@ -21,16 +21,26 @@ static BOOL GSInstalled, GSQualityAvailable, GSStackAvailable, GSSyncAvailable, 
 // server model confirms original bytes, so the native wording and localization
 // are used. Our own diagnostic reads stay native; nothing is stored.
 static _Thread_local NSUInteger GSDisplayScope, GSNativeReads;
+// Probe value + 1 for PHSServerPhoto.storagePolicy while the native subtitle is
+// rebuilt per policy to learn this build's localized quality wordings.
+static _Thread_local NSUInteger GSForcedPolicy;
 static const unsigned char GSStandardStoragePolicy=1;
 static const int GSClientOriginalPolicy=3;
 static unsigned char (*GSOriginalStoragePolicy)(id,SEL), (*GSOriginalQuotaChargeable)(id,SEL);
 static int (*GSOriginalServerStoragePolicy)(id,SEL);
 static id (*GSOriginalStatusModel)(id,SEL), (*GSOriginalBackupRow)(id,SEL,id,id,id,id,id), (*GSOriginalStackModels)(id,SEL,id,id);
-static void (*GSOriginalBackupStatusUI)(id,SEL);
+static void (*GSOriginalBackupStatusUI)(id,SEL), (*GSOriginalSetStackModels)(id,SEL,id);
+// Probed wordings keyed by the native subtitle they were derived from.
+static NSMutableDictionary<NSString *,NSArray<NSString *> *> *GSSaverWordingCache;
+// The photo of the details controller that last opened the display scope
+// (backed up); main-thread reads outside the scope are corrected only for it.
+static __weak id GSActiveExtendedPhoto;
 static NSMutableOrderedSet *GSObservedRowClasses;
 static NSMutableOrderedSet *GSPanelTexts, *GSRowTexts, *GSPanelViewClasses;
 static void GSRecordQualityCandidates(NSArray<NSString *> *candidates);
 static void GSRecordRowShape(id object,NSString *path,NSUInteger depth);
+static NSString *GSMaskedText(NSString *text);
+static void GSRecordIn(NSMutableOrderedSet *set,NSString *text,NSUInteger limit);
 static void (*GSOriginalPanelLayout)(id,SEL);
 static void GSSchedulePanelCorrection(id controller);
 static BOOL GSMethod(id object,NSString *name,const char *encoding){
@@ -112,7 +122,9 @@ static id GSBackupStatus(id controller,SEL selector,IMP original){
 // Display-scoped reads of the server model. Outside a row factory, and for our
 // own checks, every getter returns the stored value unchanged.
 static unsigned char GSDisplayStoragePolicy(id photo,SEL selector){
+ if(GSForcedPolicy)return (unsigned char)(GSForcedPolicy-1);
  unsigned char native=GSOriginalStoragePolicy(photo,selector);
+ if(!GSDisplayScope&&!GSNativeReads&&NSThread.isMainThread)GSCount(@"displayPolicyReadsOutside");
  if(!GSDisplayScope||GSNativeReads)return native;
  GSCount(@"displayPolicyReads");
  if(native==GSStandardStoragePolicy||!GSPhotoConfirmsOriginal(photo))return native;
@@ -122,9 +134,20 @@ static unsigned char GSDisplayStoragePolicy(id photo,SEL selector){
 // commit carries: 1 saver, 3 original) and is stored at load, so it does not
 // follow the getter above. Device counters (2026-09-24) show the details row
 // reads it once per build and it returned 1 while storagePolicy was overridden.
+// Device counters (2026-09-24, 4th build) show 51 in-scope reads overridden and
+// the panel still reading Storage saver: the SwiftUI details stack renders
+// after the factories return, so main-thread reads outside the scope are the
+// display too. Only the confirmed-original photo of the backed-up details
+// controller is changed; other photos and other threads stay native.
 static int GSDisplayServerStoragePolicy(id extended,SEL selector){
  int value=GSOriginalServerStoragePolicy(extended,selector);
- if(!GSDisplayScope||GSNativeReads)return value;
+ if(GSNativeReads)return value;
+ if(!GSDisplayScope){
+  if(!NSThread.isMainThread||!extended||extended!=GSActiveExtendedPhoto)return value;
+  GSCount(@"displayServerPolicyReadsOutside");
+  if(value==GSClientOriginalPolicy||!GSPhotoConfirmsOriginal(GSGet(extended,@"serverPhoto")))return value;
+  GSCount(@"displayServerPolicyOutsideOverrides");return GSClientOriginalPolicy;
+ }
  GSCount(@"displayServerPolicyReads");GSCount([NSString stringWithFormat:@"displayServerPolicy%d",value]);
  if(value==GSClientOriginalPolicy||!GSPhotoConfirmsOriginal(GSGet(extended,@"serverPhoto")))return value;
  GSCount(@"displayServerPolicyOverrides");return GSClientOriginalPolicy;
@@ -173,22 +196,56 @@ static NSString *GSTrimmedPhrase(NSString *text){
 //    with the display policy (the quality words themselves, native language);
 // 2. the subtitle without its link text, then with it, as plain text.
 // Link text alone ("Learn more") is never a candidate.
+// The whole-word part of `text` that differs from `other`, or nil.
+static NSString *GSDiffCore(NSString *text,NSString *other){
+ if(!text.length||!other.length||[text isEqual:other])return nil;
+ NSUInteger prefix=0,suffix=0,limit=MIN(text.length,other.length);
+ while(prefix<limit&&[text characterAtIndex:prefix]==[other characterAtIndex:prefix])prefix++;
+ while(suffix<limit-prefix&&[text characterAtIndex:text.length-1-suffix]==[other characterAtIndex:other.length-1-suffix])suffix++;
+ // Only whole words: a cut inside a word would splice the replacement into it.
+ if(!GSBoundary(text,prefix)||!GSBoundary(text,text.length-suffix)||!GSBoundary(other,prefix)||!GSBoundary(other,other.length-suffix))return nil;
+ NSString *core=GSTrimmedPhrase([text substringWithRange:NSMakeRange(prefix,text.length-prefix-suffix)]);
+ return core.length>1?core:nil;
+}
 static NSArray<NSString *> *GSQualityCandidates(id controller){
  NSString *native=GSNativeQualityText(controller);if(!native)return @[];
  NSMutableOrderedSet *candidates=[NSMutableOrderedSet orderedSet];
  NSString *plain=GSPlainText(native,NO),*display=GSPlainText(GSStatusSubtitle(controller,NO),NO);
- if(plain.length&&display.length&&![plain isEqual:display]){
-  NSUInteger prefix=0,suffix=0,limit=MIN(plain.length,display.length);
-  while(prefix<limit&&[plain characterAtIndex:prefix]==[display characterAtIndex:prefix])prefix++;
-  while(suffix<limit-prefix&&[plain characterAtIndex:plain.length-1-suffix]==[display characterAtIndex:display.length-1-suffix])suffix++;
-  // Only whole words: a cut inside a word would splice the replacement into it.
-  if(GSBoundary(plain,prefix)&&GSBoundary(plain,plain.length-suffix)&&GSBoundary(display,prefix)&&GSBoundary(display,display.length-suffix)){
-   NSString *core=GSTrimmedPhrase([plain substringWithRange:NSMakeRange(prefix,plain.length-prefix-suffix)]);
-   if(core.length>1)[candidates addObject:core];
-  }
- }
+ NSString *core=GSDiffCore(plain,display);if(core)[candidates addObject:core];
  for(NSString *text in @[plain?:@"",GSTrimmedPhrase(plain?:@""),GSPlainText(native,YES)?:@"",native])if(text.length>1)[candidates addObject:text];
  return candidates.array;
+}
+// Device diagnostics (2026-09-24, 4th build): for a quota-free Pixel upload the
+// native subtitle already reads "Original quality", so every candidate above
+// named the original wording and the Storage saver text was never searched
+// for. The saver wording is learned from the app itself: the native subtitle is
+// rebuilt with each storage policy value, and the words that differ from the
+// original-quality subtitle are this build's localized non-original wordings.
+// A few known Google wordings back this up when the probe yields nothing.
+static NSArray<NSString *> *GSSaverWordings(id controller){
+ NSArray *known=@[@"Storage saver",@"Storage Saver",@"保存容量の節約",@"节省空间",@"存储空间节省程序"];
+ NSString *original=GSPlainText(GSNativeQualityText(controller),NO);
+ if(!GSOriginalStatusModel||!GSOriginalStoragePolicy||!original.length)return known;
+ @synchronized(GSLock){NSArray *cached=GSSaverWordingCache[original];if(cached)return cached;}
+ NSString *standard=nil;NSMutableOrderedSet *plains=[NSMutableOrderedSet orderedSet];
+ for(NSUInteger policy=0;policy<=6;policy++){
+  id status=nil;GSForcedPolicy=policy+1;GSNativeReads++;
+  @try{status=GSOriginalStatusModel(controller,NSSelectorFromString(@"getBackupStatusModelData"));}@catch(__unused id e){}@finally{GSForcedPolicy=0;GSNativeReads--;}
+  NSString *text=GSPlainText(GSGet(status,@"backupStatusSubtitle"),NO);if(!text.length)continue;
+  if(policy==GSStandardStoragePolicy)standard=text;[plains addObject:text];
+ }
+ NSMutableOrderedSet *words=[NSMutableOrderedSet orderedSet];
+  // Baseline: the Standard subtitle, the wording the display scope already
+ // shows (device: identical to the native original-quality subtitle).
+ for(NSString *text in plains){NSString *core=GSDiffCore(text,standard);if(core)[words addObject:core];}
+ BOOL probed=words.count>0;GSCount(probed?@"saverWordingsProbed":@"saverWordingsFallback");
+ [words addObjectsFromArray:known];
+ NSArray *result=words.array;
+ // A probe that found nothing (view not ready) is retried on the next pass.
+ if(!probed)return result;
+ @synchronized(GSLock){if(!GSSaverWordingCache)GSSaverWordingCache=[NSMutableDictionary dictionary];if(GSSaverWordingCache.count<16)GSSaverWordingCache[original]=result;}
+ for(NSString *word in result){NSString *masked=GSMaskedText(word);GSRecordIn(GSRowTexts,[@"saver: " stringByAppendingString:masked?:@"<dropped>"],48);}
+ return result;
 }
 static id GSReplacedText(id value,NSString *from,NSString *to,BOOL *changed){
  if([value isKindOfClass:NSString.class]){
@@ -237,15 +294,43 @@ static BOOL GSCorrectRow(id row,NSArray<NSString *> *candidates){
  if(!candidates.count||![row isKindOfClass:NSClassFromString(@"PHSOneUpInfoPanelDetailsStackViewModel")])return NO;
  NSString *to=GSL(@"Original quality (original data available)");
  // The first candidate that occurs wins, so a broader one never re-edits it.
- for(NSString *from in candidates)if(![from isEqual:to]&&GSReplaceInObject(row,from,to,0))return YES;
+ // A candidate inside the replacement ("Original quality") would grow on
+ // every pass, so it is skipped.
+ for(NSString *from in candidates)if(![to containsString:from]&&GSReplaceInObject(row,from,to,0))return YES;
  return NO;
+}
+static BOOL GSControllerConfirmsOriginal(id controller){
+ return GSControllerBackedUp(controller)&&GSPhotoConfirmsOriginal(GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto"));
+}
+// Non-original wordings first: the native subtitle may already read original.
+static NSArray<NSString *> *GSAllCandidates(id controller){
+ NSMutableOrderedSet *all=[NSMutableOrderedSet orderedSetWithArray:GSSaverWordings(controller)];
+ [all addObjectsFromArray:GSQualityCandidates(controller)];return all.array;
+}
+// Every row of the details stack, not only the backup row: the quality words
+// may sit in any row the SwiftUI stack renders.
+static void GSCorrectRows(id controller,NSArray *rows,BOOL record){
+ if(![rows isKindOfClass:NSArray.class]||!rows.count||!GSControllerConfirmsOriginal(controller))return;
+ NSArray *candidates=GSAllCandidates(controller);NSUInteger index=0;
+ for(id row in rows){
+  if(record&&index<8)GSRecordRowShape(row,[NSString stringWithFormat:@"rows[%lu]",(unsigned long)index],0);
+  index++;if(GSCorrectRow(row,candidates))GSCount(@"stackRowCorrected");
+ }
+}
+static void GSSetStackModels(id controller,SEL selector,id rows){
+ GSCount(@"stackModelAssignments");GSCorrectRows(controller,rows,YES);GSOriginalSetStackModels(controller,selector,rows);
 }
 static void GSObserveRow(id row){
  if(!row)return;NSString *name=NSStringFromClass(object_getClass(row));
  @synchronized(GSLock){if(GSObservedRowClasses.count<8)[GSObservedRowClasses addObject:name];}
 }
 // Only a controller that already shows the photo as backed up opens the scope.
-static NSUInteger GSEnterDisplay(id controller){if(!GSControllerBackedUp(controller))return 0;GSDisplayScope++;return 1;}
+static NSUInteger GSEnterDisplay(id controller){
+ id photo=GSGet(controller,@"extendedPhoto");
+ if(!GSControllerBackedUp(controller)){if(NSThread.isMainThread&&photo&&photo==GSActiveExtendedPhoto)GSActiveExtendedPhoto=nil;return 0;}
+ if(NSThread.isMainThread)GSActiveExtendedPhoto=photo;
+ GSDisplayScope++;return 1;
+}
 // createBackupViewModel:mediaItem:serverPhoto:localAsset:storeResult: (five object arguments)
 static id GSBackupRow(id controller,SEL selector,id model,id item,id serverPhoto,id localAsset,id storeResult){
  GSCount(@"stackBackupRows");id row=nil;NSUInteger entered=GSEnterDisplay(controller);
@@ -253,25 +338,23 @@ static id GSBackupRow(id controller,SEL selector,id model,id item,id serverPhoto
  GSObserveRow(row);
  id photo=[serverPhoto isKindOfClass:NSClassFromString(@"PHSServerPhoto")]?serverPhoto:GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto");
  if(row&&entered&&GSPhotoConfirmsOriginal(photo)){
-  NSArray *candidates=GSQualityCandidates(controller);GSRecordQualityCandidates(candidates);GSRecordRowShape(row,@"row",0);
+  NSArray *candidates=GSAllCandidates(controller);GSRecordQualityCandidates(GSQualityCandidates(controller));GSRecordRowShape(row,@"row",0);
   if(GSCorrectRow(row,candidates))GSCount(@"stackRowCorrected");
  }
  if(entered)GSSchedulePanelCorrection(controller);
  return row;
 }
 static id GSStackModels(id controller,SEL selector,id photo,id item){
- NSUInteger entered=GSEnterDisplay(controller);
- @try{return GSOriginalStackModels(controller,selector,photo,item);}@finally{GSDisplayScope-=entered;}
+ NSUInteger entered=GSEnterDisplay(controller);id rows=nil;
+ @try{rows=GSOriginalStackModels(controller,selector,photo,item);}@finally{GSDisplayScope-=entered;}
+ if(entered)GSCorrectRows(controller,rows,YES);
+ return rows;
 }
 static void GSBackupStatusUI(id controller,SEL selector){
  GSCount(@"stackBackupUpdates");NSUInteger entered=GSEnterDisplay(controller);
  @try{GSOriginalBackupStatusUI(controller,selector);}@finally{GSDisplayScope-=entered;}
  GSSchedulePanelCorrection(controller);
- if(!GSControllerBackedUp(controller)||!GSPhotoConfirmsOriginal(GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto")))return;
- id rowID=GSGet(controller,@"backupStatusViewModelID");NSArray *rows=GSGet(controller,@"detailsStackViewModels");
- if(!rowID||![rows isKindOfClass:NSArray.class])return;
- NSArray *candidates=GSQualityCandidates(controller);
- for(id row in rows)if([GSGet(row,@"id")isEqual:rowID]&&GSCorrectRow(row,candidates))GSCount(@"stackRowCorrected");
+ GSCorrectRows(controller,GSGet(controller,@"detailsStackViewModels"),NO);
 }
 // Layout-time correction. Device counters (2026-09-24, 10 rows) show every
 // policy getter overridden in the row factory while the panel still read
@@ -299,18 +382,18 @@ static void GSRecordIn(NSMutableOrderedSet *set,NSString *text,NSUInteger limit)
 }
 static void GSRecordPanelText(NSString *text){GSRecordIn(GSPanelTexts,GSMaskedText(text),16);}
 static void GSRecordQualityCandidates(NSArray<NSString *> *candidates){
- if(!candidates.count){GSRecordIn(GSRowTexts,@"candidates: <none>",24);return;}
- for(NSString *text in candidates){NSString *masked=GSMaskedText(text);GSRecordIn(GSRowTexts,[@"candidate: " stringByAppendingString:masked?:@"<dropped>"],24);}
+ if(!candidates.count){GSRecordIn(GSRowTexts,@"candidates: <none>",48);return;}
+ for(NSString *text in candidates){NSString *masked=GSMaskedText(text);GSRecordIn(GSRowTexts,[@"candidate: " stringByAppendingString:masked?:@"<dropped>"],48);}
 }
 // The backup row before correction: where the quality words actually live.
 static void GSRecordRowShape(id object,NSString *path,NSUInteger depth){
  if(!object||depth>3)return;
  if([object isKindOfClass:NSString.class]||[object isKindOfClass:NSAttributedString.class]){
   NSString *text=[object isKindOfClass:NSString.class]?object:[object string];NSString *masked=GSMaskedText(text);
-  GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>: %@",path,[object isKindOfClass:NSString.class]?@"str":@"attr",masked?:@"<dropped>"],24);return;
+  GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>: %@",path,[object isKindOfClass:NSString.class]?@"str":@"attr",masked?:@"<dropped>"],48);return;
  }
  if([object isKindOfClass:NSArray.class]){NSUInteger i=0;for(id item in object){if(i>=6)break;GSRecordRowShape(item,[NSString stringWithFormat:@"%@[%lu]",path,(unsigned long)i++],depth+1);}return;}
- if(depth)GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>",path,NSStringFromClass(object_getClass(object))],24);
+ if(depth)GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>",path,NSStringFromClass(object_getClass(object))],48);
  if([object isKindOfClass:NSClassFromString(@"UIView")])return;
  for(NSString *key in GSTextKeys())if(GSMethod(object,key,"@16@0:8"))GSRecordRowShape(GSGet(object,key),[NSString stringWithFormat:@"%@.%@",path,key],depth+1);
 }
@@ -325,7 +408,7 @@ static void GSCorrectPanelView(id view,NSArray<NSString *> *candidates,NSString 
   id attributed=GSGet(view,@"attributedText");NSString *text=GSGet(view,@"text");
   GSRecordPanelText(text);
   for(NSString *from in candidates){
-   if(![text isKindOfClass:NSString.class]||![text containsString:from])continue;
+   if(![text isKindOfClass:NSString.class]||![text containsString:from]||[to containsString:from])continue;
    BOOL replaced=NO;
    if([attributed isKindOfClass:NSAttributedString.class]&&GSMethod(view,@"setAttributedText:","v24@0:8@16")){
     id value=GSReplacedText(attributed,from,to,&replaced);
@@ -342,10 +425,12 @@ static void GSCorrectPanelView(id view,NSArray<NSString *> *candidates,NSString 
 }
 static void GSCorrectPanel(id controller){
  if(GSWalkingPanel||!GSControllerBackedUp(controller)||!GSPhotoConfirmsOriginal(GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto")))return;
+ // The SwiftUI stack re-reads its row models, so they are corrected first.
+ GSCorrectRows(controller,GSGet(controller,@"detailsStackViewModels"),NO);
  id view=GSGet(controller,@"viewIfLoaded");if(!view)return;
  NSString *from=GSNativeQualityText(controller);
  GSRecordPanelText(from?[@"native-quality: " stringByAppendingString:from]:@"native-quality: <none>");
- NSArray *candidates=GSQualityCandidates(controller);
+ NSArray *candidates=GSAllCandidates(controller);
  if(!candidates.count)return;
  GSWalkingPanel=YES;GSCount(@"panelWalks");NSUInteger budget=600;
  @try{GSCorrectPanelView(view,candidates,GSL(@"Original quality (original data available)"),0,&budget);}@finally{GSWalkingPanel=NO;}
@@ -375,6 +460,7 @@ static void GSInstallStackQuality(Class details){
  if(GSPhotosHasMethod(photo,@"storagePolicy","C16@0:8"))GSOriginalStoragePolicy=(void *)GSReplace(photo,@"storagePolicy",(IMP)GSDisplayStoragePolicy);
  if(GSPhotosHasMethod(photo,@"quotaChargeable","C16@0:8"))GSOriginalQuotaChargeable=(void *)GSReplace(photo,@"quotaChargeable",(IMP)GSDisplayQuotaChargeable);
  if(GSPhotosHasMethod(extended,@"serverStoragePolicy","i16@0:8"))GSOriginalServerStoragePolicy=(void *)GSReplace(extended,@"serverStoragePolicy",(IMP)GSDisplayServerStoragePolicy);
+ if(GSPhotosHasMethod(details,@"setDetailsStackViewModels:","v24@0:8@16"))GSOriginalSetStackModels=(void *)GSReplace(details,@"setDetailsStackViewModels:",(IMP)GSSetStackModels);
  if(GSPhotosHasMethod(details,@"updateBackupStatusUI","v16@0:8"))GSOriginalBackupStatusUI=(void *)GSReplace(details,@"updateBackupStatusUI",(IMP)GSBackupStatusUI);
  if(GSPhotosHasMethod(details,@"createStackViewModelsForExtendedPhoto:preferredMediaItem:","@32@0:8@16@24"))GSOriginalStackModels=(void *)GSReplace(details,@"createStackViewModelsForExtendedPhoto:preferredMediaItem:",(IMP)GSStackModels);
  GSStackAvailable=YES;

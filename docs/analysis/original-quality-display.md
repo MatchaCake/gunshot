@@ -125,6 +125,27 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    （`row.attributes[0].text<str>: …` のようなパスと型）を、`panelViewClasses` には
    走査したビューのクラス名を記録します。リンクの URL とタグは伏せ字にします。
 
+6. **節約文言の学習と全行補正**: 4 回目の実機診断では `native-quality` が
+   「Original quality. Learn more」（storagePolicy=2 の容量非消費 Pixel 原本）で、
+   バックアップ行は `Backed up • No storage used` だけを持っていました。純正 subtitle
+   が既にオリジナル表示なので、5 の候補はすべてオリジナルの文言を探しており、
+   「Storage saver」は一度も照合されていませんでした。また詳細行は SwiftUI
+   （`OneUpInfoPanelDetailsStackView`）で描画され、UILabel は見出しだけです。
+   - 純正 `getBackupStatusModelData` を storagePolicy 0〜6 で再構築し、Standard の
+     subtitle と異なる語（ローカライズされた非オリジナル文言）を学習します
+     （`saverWordingsProbed`、`rowTexts` の `saver:`）。取得できない場合は既知の
+     Google 文言（Storage saver / 保存容量の節約 / 节省空间 等）を使います。
+   - バックアップ行だけでなく詳細スタックの全行を補正します。
+     `setDetailsStackViewModels:`（`stackModelAssignments`）、行構築の戻り値、
+     `updateBackupStatusUI`、レイアウト時に適用し、`rowTexts` に `rows[N]` の構造を
+     記録します。置換後の文言に含まれる候補（英語の「Original quality」）は
+     再置換で伸び続けるため使いません。
+   - SwiftUI は工場の後に描画するため、`PHSExtendedPhoto.serverStoragePolicy` は
+     メインスレッドでスコープ外でも、直近にスコープを開いたバックアップ済み
+     詳細画面の写真で原本確認済みの場合に限り 3 を返します
+     （`displayServerPolicyReadsOutside` / `displayServerPolicyOutsideOverrides`）。
+     他の写真、他スレッド、未バックアップの画面は純正値のままです。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
 一致しない場合、その getter だけを省略します。

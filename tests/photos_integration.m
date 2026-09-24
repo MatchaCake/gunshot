@@ -115,7 +115,9 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 - (void)setAttributedText:(NSAttributedString *)text{_attributedText=[text copy];_text=text.string;}
 @end
 static NSString *const SaverText=@"保存容量の節約",*const OriginalText=@"オリジナル画質";
-typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle,LabelFromHTMLSubtitle};
+// Wording only the probe can learn (not in the built-in fallback list).
+static NSString *const DeviceSaverText=@"節約モード";
+typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle,LabelFromHTMLSubtitle,LabelFromDeviceStack};
 // A row attribute rendered outside UIKit: only its model carries the words.
 @interface GSFixtureAttribute : NSObject
 @property(nonatomic,copy) NSString *text;
@@ -142,8 +144,11 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
 - (id)getBackupStatusModelData{
  // 7.92.0 on device: the subtitle is HTML with a help link, and its quality
  // words follow the storage policy read while it is built.
- if(self.labelSource==LabelFromHTMLSubtitle){
-  NSString *words=NativePolicy(self.extendedPhoto.serverPhoto)==1?OriginalText:SaverText;
+ if(self.labelSource==LabelFromHTMLSubtitle||self.labelSource==LabelFromDeviceStack){
+  // Device 4th build: a quota-free Pixel upload (policy 2) already reads
+  // original here; only another policy value produces the saver wording.
+  unsigned char policy=NativePolicy(self.extendedPhoto.serverPhoto);
+  NSString *words=self.labelSource==LabelFromDeviceStack?(policy==3?DeviceSaverText:OriginalText):policy==1?OriginalText:SaverText;
   NSString *html=[NSString stringWithFormat:@"バックアップ済み（%@） <a href=\"https://support.google.com/photos/answer/6220791\">詳細</a>",words];
   return [[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:self.original.backupStatus backupStatusSubtitle:html learnMoreLink:@"native-link"];
  }
@@ -176,6 +181,15 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  self.backupStatusViewModelID=row.id;[self.detailsStackViewModels addObject:row];return row;
 }
 - (id)createStackViewModelsForExtendedPhoto:(id)photo preferredMediaItem:(id)item{
+ if(self.labelSource==LabelFromDeviceStack){
+  // The backup row holds only the quota title; the saver words sit in another
+  // row whose model caches them, and the rows are assigned through the setter.
+  PHSOneUpInfoPanelDetailsStackViewModel *backup=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"バックアップ済み • 容量不使用" subtitle:@""];
+  GSFixtureAttribute *words=[GSFixtureAttribute new];words.text=DeviceSaverText;
+  PHSOneUpInfoPanelDetailsStackViewModel *quality=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"画質" subtitle:@""];quality.attributes=@[words];
+  self.backupStatusViewModelID=backup.id;self.detailsStackViewModels=[NSMutableArray arrayWithObjects:backup,quality,nil];
+  return [self.detailsStackViewModels copy];
+ }
  self.detailsStackViewModels=[NSMutableArray array];
  return @[[self createBackupViewModel:item mediaItem:nil serverPhoto:self.extendedPhoto.serverPhoto localAsset:nil storeResult:nil]];
 }
@@ -273,7 +287,12 @@ int main(void){@autoreleasepool{
  // (device: displayServerPolicy1 while storagePolicy was already overridden).
  details.labelSource=LabelFromExtendedPhoto;NSUInteger textFixes=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayServerPolicyReads")>=1&&Count(@"displayServerPolicyOverrides")>=1&&Count(@"stackRowCorrected")==textFixes);
- assert(details.extendedPhoto.serverStoragePolicy==1); // Native outside the scope.
+ // Outside the scope: main-thread (display) reads follow the correction; other threads stay native.
+ assert(details.extendedPhoto.serverStoragePolicy==3&&Count(@"displayServerPolicyOutsideOverrides")>=1);
+ __block int background=0;dispatch_group_t group=dispatch_group_create();
+ dispatch_group_async(group,dispatch_get_global_queue(0,0),^{background=details.extendedPhoto.serverStoragePolicy;});
+ dispatch_group_wait(group,DISPATCH_TIME_FOREVER);assert(background==1);
+ photo.hasOriginalBytes=2;assert(details.extendedPhoto.serverStoragePolicy==1);photo.hasOriginalBytes=1;
  // The factory copies the native subtitle wording: the row text is replaced, the quota title kept.
  details.labelSource=LabelFromNativeSubtitle;NSUInteger corrections=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&[row.title isEqual:details.original.backupStatus]);
@@ -343,6 +362,26 @@ int main(void){@autoreleasepool{
  // Not an original: the nested words stay native.
  photo.hasOriginalBytes=2;details.frozenWords=NO;BuildRow();assert([[row.attributes[0] text]isEqual:SaverText]);
  photo.hasOriginalBytes=1;details.labelSource=LabelFromServerPhoto;details.viewIfLoaded=nil;
+ // Device 4th build: the native subtitle already reads original, and the saver
+ // words are in a non-backup row. The probe learns them from the app's own
+ // subtitle for another policy, and every assigned row is corrected.
+ photo.storagePolicy=2;details.labelSource=LabelFromDeviceStack;details.frozenWords=NO;
+ NSUInteger assigned=Count(@"stackModelAssignments");corrections=Count(@"stackRowCorrected");
+ NSArray *stack=[details createStackViewModelsForExtendedPhoto:details.extendedPhoto preferredMediaItem:nil];
+ GSFixtureAttribute *deviceWords=[stack[1] attributes][0];
+ assert([deviceWords.text isEqual:fixed]&&[[stack[0] title]isEqual:@"バックアップ済み • 容量不使用"]);
+ assert(Count(@"stackModelAssignments")==assigned+1&&Count(@"stackRowCorrected")>=corrections+1&&Count(@"saverWordingsProbed")>=1);
+ rowTexts=GSPhotosIntegrationSnapshot()[@"rowTexts"];
+ assert([rowTexts containsObject:[@"saver: " stringByAppendingString:DeviceSaverText]]);
+ assert([rowTexts containsObject:[@"rows[1].attributes[0].text<str>: " stringByAppendingString:DeviceSaverText]]);
+ // A row model refreshed after assignment is corrected on the next layout,
+ // and the replacement is never re-edited (English "Original quality" is inside it).
+ deviceWords.text=DeviceSaverText;[details viewDidLayoutSubviews];assert([deviceWords.text isEqual:fixed]);
+ [details viewDidLayoutSubviews];assert([deviceWords.text isEqual:fixed]);
+ // Not an original: the row keeps the native words.
+ photo.hasOriginalBytes=2;stack=[details createStackViewModelsForExtendedPhoto:details.extendedPhoto preferredMediaItem:nil];
+ assert([[(GSFixtureAttribute *)[stack[1] attributes][0] text]isEqual:DeviceSaverText]);
+ photo.hasOriginalBytes=1;details.labelSource=LabelFromServerPhoto;
 #endif
  photo.storagePolicy=1;
 #endif
