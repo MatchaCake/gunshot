@@ -172,6 +172,27 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
      全モデルに文言補正を適用します。`PHSExtendedPhoto.needsFullBackup` の読取を
      `needsFullBackup{Original,}{Yes,No}` で数えます（値は変更しません）。
 
+8. **行モデルの initializer 補正**: 7 回目の実機診断（23 行構築、127 回走査）では
+   `storagePolicy` は純正 2（オリジナル）、`serverStoragePolicy` はスコープ内 346 読取が
+   全て 3 に置換、スコープ外・別インスタンス・別スレッドの読取は 0 件、行モデルの
+   `title` / `attributes` / `expandedContent` に節約文言は無く、UILabel は「Details」
+   だけで、それでも表示は「Storage saver」でした。7.92.0 の索引では
+   `PHSOneUpInfoPanelDetailsStackViewModel` に `initWithTitle:subtitle:` /
+   `initWithTitle:subtitle:icon:` があるのに `subtitle` の getter が存在しません。
+   subtitle は Swift 側の保持値で、詳細スタックが直接描画します。工場がこの
+   initializer に渡す値だけが文言の入口なので、そこで補正します。
+   - 表示スコープ内（原本確認済みの詳細コントローラの工場実行中）に限り、渡された
+     subtitle / title に学習済み・既知の節約文言が含まれれば、その部分だけを
+     置き換えます（`initCorrected.subtitle` / `initCorrected.title`）。純正文言の
+     再構築（probe）や入れ子読取、スコープ外の生成は無変更です。
+   - 渡された値は `rowTexts` に `init.subtitle<str>: …` / `init.title<str>: …` として
+     記録します（伏せ字規則は同じ）。行 id（UUID）は `<uuid>` に畳んで記録件数を
+     節約し、`rowTexts` の上限を 128 にしました。
+   - SwiftUI の描画文字列は UILabel に無いため、走査中に見つけた Hosting view の
+     accessibility 要素の `accessibilityLabel` / `accessibilityValue` を `panelTexts`
+     に `a11y: …` として記録します（`panelA11yElements`、上限 32 件）。次の診断で
+     画面上の文言とその出所を直接突き合わせられます。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
 一致しない場合、その getter だけを省略します。

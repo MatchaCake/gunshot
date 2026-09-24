@@ -76,14 +76,19 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 @implementation PHSOneUpInfoPanelBackupStatusData
 - (instancetype)initWithBackupStatus:(NSString *)status backupStatusSubtitle:(NSString *)subtitle learnMoreLink:(NSString *)link{if((self=[super init])){self.backupStatus=status;self.backupStatusSubtitle=subtitle;self.learnMoreLink=link;}return self;}
 @end
-@interface PHSOneUpInfoPanelDetailsStackViewModel : NSObject
+// 7.92.0 index: id / title / attributes / expandedContent getters and the
+// initWithTitle:subtitle:(icon:) initializers; the subtitle has no getter (Swift
+// storage). The fixture keeps it behind a name the integration never reads.
+@interface PHSOneUpInfoPanelDetailsStackViewModel : NSObject{NSString *_swiftSubtitle;}
 @property(nonatomic,strong) NSString *id;
 @property(nonatomic,strong) NSString *title;
 @property(nonatomic,strong) NSArray *attributes;
 - (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle;
+- (NSString *)renderedSubtitle;
 @end
 @implementation PHSOneUpInfoPanelDetailsStackViewModel
-- (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle{if((self=[super init])){self.id=NSUUID.UUID.UUIDString;self.title=title;self.attributes=@[subtitle];}return self;}
+- (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle{if((self=[super init])){self.id=NSUUID.UUID.UUIDString;self.title=title;_swiftSubtitle=subtitle;}return self;}
+- (NSString *)renderedSubtitle{return _swiftSubtitle;}
 @end
 #ifdef GS_TEST_LEGACY
 @interface PHSOneUpInfoPanelSectionViewController : NSObject
@@ -117,7 +122,7 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 static NSString *const SaverText=@"保存容量の節約",*const OriginalText=@"オリジナル画質";
 // Wording only the probe can learn (not in the built-in fallback list).
 static NSString *const DeviceSaverText=@"節約モード";
-typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle,LabelFromHTMLSubtitle,LabelFromDeviceStack};
+typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle,LabelFromHTMLSubtitle,LabelFromDeviceStack,LabelFromInitSubtitle};
 // A row attribute rendered outside UIKit: only its model carries the words.
 @interface GSFixtureAttribute : NSObject
 @property(nonatomic,copy) NSString *text;
@@ -168,13 +173,20 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
   case LabelFromExtendedPhoto:return self.extendedPhoto.serverStoragePolicy==3?OriginalText:SaverText;
   case LabelFromNativeSubtitle:return self.original.backupStatusSubtitle;
   case LabelFromHTMLSubtitle:return NativePolicy(photo)==2?OriginalText:SaverText;
+  // Device (7th diagnostics): every getter reads original, the words still say
+  // saver. The source is not exposed by any getter, so the fixture fixes them.
+  case LabelFromInitSubtitle:return SaverText;
   default:return NativePolicy(photo)==2?OriginalText:SaverText;
  }
 }
 - (id)createBackupViewModel:(id)item mediaItem:(id)media serverPhoto:(id)photo localAsset:(id)asset storeResult:(id)store{
  self.rowBuilds++;
  id status=[self getBackupStatusModelData]; // The stack path reuses the quota text and link.
- PHSOneUpInfoPanelDetailsStackViewModel *row=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:[status backupStatus] subtitle:[self qualityTextForPhoto:photo]];
+ // The device factory hands the words to initWithTitle:subtitle:; the other
+ // sources keep them in an attribute the getters expose.
+ BOOL viaInit=self.labelSource==LabelFromInitSubtitle;
+ PHSOneUpInfoPanelDetailsStackViewModel *row=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:[status backupStatus] subtitle:viaInit?[self qualityTextForPhoto:photo]:nil];
+ if(!viaInit&&self.labelSource!=LabelFromHTMLSubtitle)row.attributes=@[[self qualityTextForPhoto:photo]];
  if(self.labelSource==LabelFromHTMLSubtitle){
   // Words in a nested model, fetched while storagePolicy is still native.
   GSFixtureAttribute *words=[GSFixtureAttribute new],*link=[GSFixtureAttribute new];link.text=@"詳細";
@@ -187,9 +199,9 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  if(self.labelSource==LabelFromDeviceStack){
   // The backup row holds only the quota title; the saver words sit in another
   // row whose model caches them, and the rows are assigned through the setter.
-  PHSOneUpInfoPanelDetailsStackViewModel *backup=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"バックアップ済み • 容量不使用" subtitle:@""];
+  PHSOneUpInfoPanelDetailsStackViewModel *backup=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"バックアップ済み • 容量不使用" subtitle:nil];
   GSFixtureAttribute *words=[GSFixtureAttribute new];words.text=DeviceSaverText;
-  PHSOneUpInfoPanelDetailsStackViewModel *quality=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"画質" subtitle:@""];quality.attributes=@[words];
+  PHSOneUpInfoPanelDetailsStackViewModel *quality=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"画質" subtitle:nil];quality.attributes=@[words];
   self.backupStatusViewModelID=backup.id;self.detailsStackViewModels=[NSMutableArray arrayWithObjects:backup,quality,nil];
   return [self.detailsStackViewModels copy];
  }
@@ -317,6 +329,20 @@ int main(void){@autoreleasepool{
  // A later native status update on the tracked row is corrected again.
  [details updateBackupStatusUI];
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&Count(@"stackBackupUpdates")>=1&&Count(@"stackRowCorrected")==corrections+2);
+ // Device 7th build: the factory passes the words to initWithTitle:subtitle:,
+ // whose value no getter exposes (Swift storage rendered directly). It is
+ // corrected on the way in, recorded, and only inside a confirmed original's scope.
+ details.labelSource=LabelFromInitSubtitle;NSUInteger initFixes=Count(@"initCorrected.subtitle");BuildRow();
+ assert([[row renderedSubtitle]isEqual:GSL(@"Original quality (original data available)")]&&!row.attributes&&[row.title isEqual:details.original.backupStatus]);
+ assert(Count(@"initCorrected.subtitle")==initFixes+1&&[GSPhotosIntegrationSnapshot()[@"rowTexts"]containsObject:[@"init.subtitle<str>: " stringByAppendingString:SaverText]]);
+ assert([GSPhotosIntegrationSnapshot()[@"rowTexts"]containsObject:[@"init.title<str>: " stringByAppendingString:details.original.backupStatus]]);
+ photo.hasOriginalBytes=2;BuildRow();assert([[row renderedSubtitle]isEqual:SaverText]);
+ photo.hasOriginalBytes=1;photo.isPartialBackup=YES;BuildRow();assert([[row renderedSubtitle]isEqual:SaverText]);
+ photo.isPartialBackup=NO;details.isBackedUp=NO;BuildRow();assert([[row renderedSubtitle]isEqual:SaverText]);
+ details.isBackedUp=YES;
+ // Outside any factory the initializer is untouched.
+ PHSOneUpInfoPanelDetailsStackViewModel *loose=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:@"x" subtitle:SaverText];
+ assert([[loose renderedSubtitle]isEqual:SaverText]&&Count(@"initCorrected.subtitle")==initFixes+1);
  // No / partial / not backed up leave the native row and never override the policy.
  // The photo sits on the saver policy so the native row wording is saver.
  photo.storagePolicy=1;

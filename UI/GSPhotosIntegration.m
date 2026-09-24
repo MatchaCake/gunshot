@@ -42,6 +42,13 @@ static NSMutableDictionary<NSString *,NSArray<NSString *> *> *GSSaverWordingCach
 // The photo of the details controller that last opened the display scope
 // (backed up); main-thread reads outside the scope are corrected only for it.
 static __weak id GSActiveExtendedPhoto;
+// The details controller whose display scope is open on this thread. Read only
+// while GSDisplayScope is non-zero, when the factory that opened it still holds
+// the controller.
+static _Thread_local void *GSScopeController;
+static _Thread_local BOOL GSCorrectingInit;
+static id (*GSOriginalRowInitSubtitle)(id,SEL,id,id), (*GSOriginalRowInitSubtitleIcon)(id,SEL,id,id,id);
+static const NSUInteger GSRowTextLimit=128;
 static NSMutableOrderedSet *GSObservedRowClasses;
 static NSMutableOrderedSet *GSPanelTexts, *GSRowTexts, *GSPanelViewClasses;
 static void GSRecordQualityCandidates(NSArray<NSString *> *candidates);
@@ -177,9 +184,9 @@ static unsigned char GSDisplayQuotaChargeable(id photo,SEL selector){
 // native subtitle for this controller identifies the wording to replace, so no
 // Google string key or hardcoded language is needed.
 static NSString *GSStatusSubtitle(id controller,BOOL native){
- if(!GSOriginalStatusModel)return nil;id status=nil;
- if(native)GSNativeReads++;else GSDisplayScope++;
- @try{status=GSOriginalStatusModel(controller,NSSelectorFromString(@"getBackupStatusModelData"));}@finally{if(native)GSNativeReads--;else GSDisplayScope--;}
+ if(!GSOriginalStatusModel)return nil;id status=nil;void *previous=GSScopeController;
+ if(native)GSNativeReads++;else{GSDisplayScope++;GSScopeController=(__bridge void *)controller;}
+ @try{status=GSOriginalStatusModel(controller,NSSelectorFromString(@"getBackupStatusModelData"));}@finally{if(native)GSNativeReads--;else{GSDisplayScope--;GSScopeController=previous;}}
  NSString *text=GSGet(status,@"backupStatusSubtitle");
  return [text isKindOfClass:NSString.class]&&text.length?text:nil;
 }
@@ -264,7 +271,7 @@ static NSArray<NSString *> *GSSaverWordings(id controller){
  // A probe that found nothing (view not ready) is retried on the next pass.
  if(!probed)return result;
  @synchronized(GSLock){if(!GSSaverWordingCache)GSSaverWordingCache=[NSMutableDictionary dictionary];if(GSSaverWordingCache.count<16)GSSaverWordingCache[original]=result;}
- for(NSString *word in result){NSString *masked=GSMaskedText(word);GSRecordIn(GSRowTexts,[@"saver: " stringByAppendingString:masked?:@"<dropped>"],96);}
+ for(NSString *word in result){NSString *masked=GSMaskedText(word);GSRecordIn(GSRowTexts,[@"saver: " stringByAppendingString:masked?:@"<dropped>"],GSRowTextLimit);}
  return result;
 }
 static id GSReplacedText(id value,NSString *from,NSString *to,BOOL *changed){
@@ -329,6 +336,38 @@ static NSArray<NSString *> *GSAllCandidates(id controller){
  NSMutableOrderedSet *all=[NSMutableOrderedSet orderedSetWithArray:GSSaverWordings(controller)];
  [all addObjectsFromArray:GSQualityCandidates(controller)];return all.array;
 }
+// The row model's subtitle has no Objective-C getter in 7.92.0: the archived
+// index lists id / title / attributes / expandedContent and the initializers
+// initWithTitle:subtitle:(icon:) only, so the value is Swift-side storage the
+// details stack renders directly. The 7th diagnostics (23 rows, every policy
+// getter reading original, no row property holding the words, panel still
+// Storage saver) leave the value the factory passes to that initializer as the
+// only entry point for the words. Inside the display scope of a confirmed
+// original the saver wording is replaced on the way in; the value is recorded
+// so the device names the wording. Probes and nested reads pass through.
+static id GSCorrectedInitText(id text,NSString *key){
+ if(!text||!GSDisplayScope||GSNativeReads||GSCorrectingInit||!GSScopeController)return text;
+ if(![text isKindOfClass:NSString.class]&&![text isKindOfClass:NSAttributedString.class])return text;
+ id controller=(__bridge id)GSScopeController;GSCorrectingInit=YES;
+ @try{
+  NSString *plain=[text isKindOfClass:NSAttributedString.class]?[(NSAttributedString *)text string]:text;
+  if(plain.length){NSString *masked=GSMaskedText(plain);
+   GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"init.%@<%@>: %@",key,[text isKindOfClass:NSString.class]?@"str":@"attr",masked?:@"<dropped>"],GSRowTextLimit);}
+  if(!plain.length||!GSControllerConfirmsOriginal(controller))return text;
+  NSString *to=GSL(@"Original quality (original data available)");
+  for(NSString *from in GSAllCandidates(controller)){
+   if([to containsString:from])continue;BOOL changed=NO;id updated=GSReplacedText(text,from,to,&changed);
+   if(changed){GSCount([@"initCorrected." stringByAppendingString:key]);return updated;}
+  }
+  return text;
+ }@finally{GSCorrectingInit=NO;}
+}
+static id GSRowInitSubtitle(id row,SEL selector,id title,id subtitle){
+ return GSOriginalRowInitSubtitle(row,selector,GSCorrectedInitText(title,@"title"),GSCorrectedInitText(subtitle,@"subtitle"));
+}
+static id GSRowInitSubtitleIcon(id row,SEL selector,id title,id subtitle,id icon){
+ return GSOriginalRowInitSubtitleIcon(row,selector,GSCorrectedInitText(title,@"title"),GSCorrectedInitText(subtitle,@"subtitle"),icon);
+}
 // Every row of the details stack, not only the backup row: the quality words
 // may sit in any row the SwiftUI stack renders.
 static void GSCorrectModels(id controller,NSArray *rows,NSString *recordAs){
@@ -352,7 +391,7 @@ static NSUInteger GSEnterDisplay(id controller){
  id photo=GSGet(controller,@"extendedPhoto");
  if(!GSControllerBackedUp(controller)){if(NSThread.isMainThread&&photo&&photo==GSActiveExtendedPhoto)GSActiveExtendedPhoto=nil;return 0;}
  if(NSThread.isMainThread)GSActiveExtendedPhoto=photo;
- GSDisplayScope++;return 1;
+ GSScopeController=(__bridge void *)controller;GSDisplayScope++;return 1;
 }
 // createBackupViewModel:mediaItem:serverPhoto:localAsset:storeResult: (five object arguments)
 static id GSBackupRow(id controller,SEL selector,id model,id item,id serverPhoto,id localAsset,id storeResult){
@@ -395,6 +434,9 @@ static NSString *GSMaskedText(NSString *text){
  text=[text stringByReplacingOccurrencesOfString:@"https?://\\S+" withString:@"<url>" options:NSRegularExpressionSearch|NSCaseInsensitiveSearch range:NSMakeRange(0,text.length)];
  text=[text stringByReplacingOccurrencesOfString:@"</" withString:@"<" options:0 range:NSMakeRange(0,text.length)];
  text=[text stringByReplacingOccurrencesOfString:@"\\s*/>" withString:@">" options:NSRegularExpressionSearch range:NSMakeRange(0,text.length)];
+ // Row ids (device: one learn-more link entry per built row) collapse to one
+ // diagnostic entry instead of filling the list.
+ text=[text stringByReplacingOccurrencesOfString:@"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}" withString:@"<uuid>" options:NSRegularExpressionSearch range:NSMakeRange(0,text.length)];
  if([text containsString:@"/"])return nil;
  if([text rangeOfString:@"\\.[A-Za-z0-9]{2,5}$" options:NSRegularExpressionSearch].location!=NSNotFound)return nil; // File names.
  NSString *masked=[text stringByReplacingOccurrencesOfString:@"[0-9]" withString:@"#" options:NSRegularExpressionSearch range:NSMakeRange(0,text.length)];
@@ -403,21 +445,32 @@ static NSString *GSMaskedText(NSString *text){
 static void GSRecordIn(NSMutableOrderedSet *set,NSString *text,NSUInteger limit){
  if(!text)return;@synchronized(GSLock){if(set.count<limit)[set addObject:text];}
 }
-static void GSRecordPanelText(NSString *text){GSRecordIn(GSPanelTexts,GSMaskedText(text),16);}
+static void GSRecordPanelText(NSString *text){GSRecordIn(GSPanelTexts,GSMaskedText(text),32);}
 static void GSRecordQualityCandidates(NSArray<NSString *> *candidates){
- if(!candidates.count){GSRecordIn(GSRowTexts,@"candidates: <none>",96);return;}
- for(NSString *text in candidates){NSString *masked=GSMaskedText(text);GSRecordIn(GSRowTexts,[@"candidate: " stringByAppendingString:masked?:@"<dropped>"],96);}
+ if(!candidates.count){GSRecordIn(GSRowTexts,@"candidates: <none>",GSRowTextLimit);return;}
+ for(NSString *text in candidates){NSString *masked=GSMaskedText(text);GSRecordIn(GSRowTexts,[@"candidate: " stringByAppendingString:masked?:@"<dropped>"],GSRowTextLimit);}
+}
+// The details rows are SwiftUI; their text is not in UILabels (device: 104
+// labels seen, only "Details"). The hosting view's accessibility elements carry
+// the rendered strings, so they are recorded (masked) to name the visible text.
+static void GSRecordAccessibility(id element,NSUInteger depth,NSUInteger *budget){
+ if(!element||depth>2||!*budget)return;(*budget)--;
+ NSString *label=GSGet(element,@"accessibilityLabel"),*value=GSGet(element,@"accessibilityValue");
+ if([label isKindOfClass:NSString.class]&&label.length){GSCount(@"panelA11yElements");GSRecordPanelText([@"a11y: " stringByAppendingString:label]);}
+ if([value isKindOfClass:NSString.class]&&value.length)GSRecordPanelText([@"a11y-value: " stringByAppendingString:value]);
+ NSArray *children=GSGet(element,@"accessibilityElements");
+ if([children isKindOfClass:NSArray.class])for(id child in [children copy])GSRecordAccessibility(child,depth+1,budget);
 }
 // The backup row before correction: where the quality words actually live.
 static void GSRecordRowShape(id object,NSString *path,NSUInteger depth){
  if(!object||depth>3)return;
  if([object isKindOfClass:NSString.class]||[object isKindOfClass:NSAttributedString.class]){
   NSString *text=[object isKindOfClass:NSString.class]?object:[object string];NSString *masked=GSMaskedText(text);
-  GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>: %@",path,[object isKindOfClass:NSString.class]?@"str":@"attr",masked?:@"<dropped>"],96);return;
+  GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>: %@",path,[object isKindOfClass:NSString.class]?@"str":@"attr",masked?:@"<dropped>"],GSRowTextLimit);return;
  }
  if([object isKindOfClass:NSArray.class]){NSUInteger i=0;for(id item in object){if(i>=6)break;GSRecordRowShape(item,[NSString stringWithFormat:@"%@[%lu]",path,(unsigned long)i++],depth+1);}return;}
  if([object isKindOfClass:NSDictionary.class]){NSUInteger i=0;for(id key in object){if(i>=6)break;GSRecordRowShape(((NSDictionary *)object)[key],[NSString stringWithFormat:@"%@{%@}",path,GSMaskedText([key description])?:@"?"],depth+1);i++;}return;}
- if(depth)GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>",path,NSStringFromClass(object_getClass(object))],96);
+ if(depth)GSRecordIn(GSRowTexts,[NSString stringWithFormat:@"%@<%@>",path,NSStringFromClass(object_getClass(object))],GSRowTextLimit);
  if([object isKindOfClass:NSClassFromString(@"UIView")])return;
  for(NSString *key in GSTextKeys())if(GSMethod(object,key,"@16@0:8"))GSRecordRowShape(GSGet(object,key),[NSString stringWithFormat:@"%@.%@",path,key],depth+1);
 }
@@ -443,6 +496,8 @@ static void GSCorrectPanelView(id view,NSArray<NSString *> *candidates,NSString 
    }
    if(replaced){GSCount(@"panelLabelCorrected");break;}
   }
+ }else if([NSStringFromClass(object_getClass(view)) containsString:@"Hosting"]){
+  NSUInteger elements=48;GSRecordAccessibility(view,0,&elements);
  }
  NSArray *subviews=GSGet(view,@"subviews");
  if([subviews isKindOfClass:NSArray.class])for(id child in [subviews copy])GSCorrectPanelView(child,candidates,to,depth+1,budget);
@@ -486,6 +541,10 @@ static void GSInstallStackQuality(Class details){
  // Inherited from UIViewController; GSReplace shadows it on the details class only.
  if(GSPhotosHasMethod(details,@"viewDidLayoutSubviews","v16@0:8"))GSOriginalPanelLayout=(void *)GSReplace(details,@"viewDidLayoutSubviews",(IMP)GSPanelLayout);
  GSOriginalBackupRow=(void *)GSReplace(details,factory,(IMP)GSBackupRow);
+ // The row subtitle enters through these initializers only (no getter exists).
+ Class rowModel=NSClassFromString(@"PHSOneUpInfoPanelDetailsStackViewModel");
+ if(GSPhotosHasMethod(rowModel,@"initWithTitle:subtitle:","@32@0:8@16@24"))GSOriginalRowInitSubtitle=(void *)GSReplace(rowModel,@"initWithTitle:subtitle:",(IMP)GSRowInitSubtitle);
+ if(GSPhotosHasMethod(rowModel,@"initWithTitle:subtitle:icon:","@40@0:8@16@24@32"))GSOriginalRowInitSubtitleIcon=(void *)GSReplace(rowModel,@"initWithTitle:subtitle:icon:",(IMP)GSRowInitSubtitleIcon);
  // Optional: the policy getter is the display source; the rest identify the path.
  if(GSPhotosHasMethod(photo,@"storagePolicy","C16@0:8"))GSOriginalStoragePolicy=(void *)GSReplace(photo,@"storagePolicy",(IMP)GSDisplayStoragePolicy);
  if(GSPhotosHasMethod(photo,@"quotaChargeable","C16@0:8"))GSOriginalQuotaChargeable=(void *)GSReplace(photo,@"quotaChargeable",(IMP)GSDisplayQuotaChargeable);
