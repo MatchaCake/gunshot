@@ -181,6 +181,8 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    `initWithTitle:subtitle:icon:` があるのに `subtitle` の getter が存在しません。
    subtitle は Swift 側の保持値で、詳細スタックが直接描画します。工場がこの
    initializer に渡す値だけが文言の入口なので、そこで補正します。
+   **2026-09-24 に実機（7.92.0、jailed）で「オリジナル画質」表示を確認しました。**
+   1〜7 は単独では表示を変えず、8 が必要でした。
    - 表示スコープ内（原本確認済みの詳細コントローラの工場実行中）に限り、渡された
      subtitle / title に学習済み・既知の節約文言が含まれれば、その部分だけを
      置き換えます（`initCorrected.subtitle` / `initCorrected.title`）。純正文言の
