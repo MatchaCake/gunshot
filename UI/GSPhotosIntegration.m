@@ -223,7 +223,8 @@ static NSArray<NSString *> *GSQualityCandidates(id controller){
 // original-quality subtitle are this build's localized non-original wordings.
 // A few known Google wordings back this up when the probe yields nothing.
 static NSArray<NSString *> *GSSaverWordings(id controller){
- NSArray *known=@[@"Storage saver",@"Storage Saver",@"保存容量の節約",@"节省空间",@"存储空间节省程序"];
+ // Known match-only wordings (en, ja, zh-Hans), escaped: never displayed.
+ NSArray *known=@[@"Storage saver",@"Storage Saver",@"\u4fdd\u5b58\u5bb9\u91cf\u306e\u7bc0\u7d04",@"\u8282\u7701\u7a7a\u95f4",@"\u5b58\u50a8\u7a7a\u95f4\u8282\u7701\u7a0b\u5e8f"];
  NSString *original=GSPlainText(GSNativeQualityText(controller),NO);
  if(!GSOriginalStatusModel||!GSOriginalStoragePolicy||!original.length)return known;
  @synchronized(GSLock){NSArray *cached=GSSaverWordingCache[original];if(cached)return cached;}
