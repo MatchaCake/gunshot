@@ -63,6 +63,19 @@ static id MainBundle(id object,SEL selector){static id bundle;if(!bundle)bundle=
 @implementation OGLBentoAccountMenuFactory
 - (id)makeBentoAccountMenuViewController{return [NSObject new];}
 @end
+// Native card source that hides its storage card: probes must pass values through.
+@interface PHSMyAccountMenuDataSource : NSObject
+- (BOOL)shouldShowStorageCard;
+- (id)storageCardData;
+- (id)accountMenuCardData;
+- (id)quota;
+@end
+@implementation PHSMyAccountMenuDataSource
+- (BOOL)shouldShowStorageCard{return NO;}
+- (id)storageCardData{return nil;}
+- (id)accountMenuCardData{return @[[NSObject new]];}
+- (id)quota{return @"quota";}
+@end
 @interface GSStorageObserver : NSObject @end
 @implementation GSStorageObserver
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context{}
@@ -123,12 +136,17 @@ int main(int argc,const char **argv){@autoreleasepool{
   GSSetUnlimitedStorage(NO);assert([[cellClass titleTextWithStorageItem:item]isEqual:@"Native regular title"]);GSSetUnlimitedStorage(YES);
  }
  assert([[OGLBentoAccountMenuFactory new]makeBentoAccountMenuViewController]);
- NSDictionary *snapshot=GSUnlimitedStorageSnapshot();
+ PHSMyAccountMenuDataSource *source=[PHSMyAccountMenuDataSource new];
+ assert(![source shouldShowStorageCard]&&![source storageCardData]&&[[source accountMenuCardData]count]==1);
+ NSDictionary *snapshot=GSUnlimitedStorageSnapshot(),*cardSource=snapshot[@"cardSource"];
+ assert([cardSource[@"shouldShowCalls"]unsignedLongValue]==1&&[cardSource[@"shouldShowYes"]unsignedLongValue]==0);
+ assert([cardSource[@"storageCardCalls"]unsignedLongValue]==1&&[cardSource[@"storageCardNonNil"]unsignedLongValue]==0&&[cardSource[@"quotaPresent"]unsignedLongValue]==1);
+ assert([cardSource[@"photosCardReads"]unsignedLongValue]==1&&[cardSource[@"menuCards"]isEqual:@[@"photos:NSObject"]]&&[cardSource[@"bentoEnabled"]longValue]==-1);
  assert([snapshot[@"implementation"]isEqual:@"native-display-model-v4"]&&[snapshot[@"modelStateReads"]unsignedLongValue]>0&&[snapshot[@"modelTitleReads"]unsignedLongValue]>0);
  assert([snapshot[@"bentoControllers"]unsignedLongValue]==1&&[snapshot[@"archiveCalls"]unsignedLongValue]>=2);
  assert([snapshot[@"cardClasses"]containsObject:@"NSKVONotifying_OGLAccountMenuStorageCardData"]);
  assert([snapshot[@"cellUpdates"]unsignedLongValue]==(bentoOnly?0:1));
- NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
+ NSSet *keys=[NSSet setWithArray:@[@"implementation",@"available",@"enabled",@"status",@"legacyObserver",@"bentoObserver",@"stringsReady",@"modelStateReads",@"modelTitleReads",@"displayOverrides",@"archiveCalls",@"bentoControllers",@"cellUpdates",@"titleCalls",@"nativeStorageState",@"displayStorageState",@"renderedStorageState",@"cardClasses",@"controllerClasses",@"cardSource"]];assert([[NSSet setWithArray:snapshot.allKeys]isEqual:keys]);
  [defaults removeObjectForKey:@"GSShowUnlimitedStorage"];
  NSLog(@"PASS Swift model reads with %@; KVO, native backing fields, coder restoration, late resources, callbacks, on/off",bentoOnly?@"no legacy renderer":@"legacy renderer");
 }}

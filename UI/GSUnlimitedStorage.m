@@ -18,7 +18,12 @@ static atomic_bool GSStringsReady;
 // Nested NSCoder calls must read native values; restored in @finally.
 static _Thread_local NSUInteger GSStorageOriginalReads;
 static NSObject *GSStorageLock;
-static NSMutableOrderedSet *GSObservedCardClasses, *GSObservedControllerClasses;
+static NSMutableOrderedSet *GSObservedCardClasses, *GSObservedControllerClasses, *GSObservedMenuCards;
+// Passive card-source probes: which source (if any) supplies the storage card.
+static BOOL (*GSOriginalShouldShow)(id,SEL), (*GSOriginalBentoEnabled)(id,SEL);
+static id (*GSOriginalStorageCardData)(id,SEL), (*GSOriginalPhotosCards)(id,SEL), (*GSOriginalAggregatorCards)(id,SEL);
+static atomic_ulong GSShouldShowCalls, GSShouldShowYes, GSStorageCardCalls, GSStorageCardNonNil, GSQuotaPresent, GSPhotosCardReads, GSAggregatorCardReads;
+static atomic_long GSBentoEnabled=-1;
 
 BOOL GSUnlimitedStorageEnabled(void){
  id value=[NSUserDefaults.standardUserDefaults objectForKey:GSStoragePreference];
@@ -36,7 +41,12 @@ NSDictionary *GSUnlimitedStorageSnapshot(void){
   @"cellUpdates":@(atomic_load(&GSCellUpdates)),@"titleCalls":@(atomic_load(&GSTitleCalls)),
   @"nativeStorageState":@(atomic_load(&GSNativeState)),@"displayStorageState":@(atomic_load(&GSDisplayState)),
   @"renderedStorageState":@(atomic_load(&GSRenderedState)),
-  @"cardClasses":GSObservedCardClasses.array?:@[],@"controllerClasses":GSObservedControllerClasses.array?:@[]};}
+  @"cardClasses":GSObservedCardClasses.array?:@[],@"controllerClasses":GSObservedControllerClasses.array?:@[],
+  @"cardSource":@{@"shouldShowCalls":@(atomic_load(&GSShouldShowCalls)),@"shouldShowYes":@(atomic_load(&GSShouldShowYes)),
+   @"storageCardCalls":@(atomic_load(&GSStorageCardCalls)),@"storageCardNonNil":@(atomic_load(&GSStorageCardNonNil)),
+   @"quotaPresent":@(atomic_load(&GSQuotaPresent)),@"photosCardReads":@(atomic_load(&GSPhotosCardReads)),
+   @"aggregatorCardReads":@(atomic_load(&GSAggregatorCardReads)),@"bentoEnabled":@(atomic_load(&GSBentoEnabled)),
+   @"menuCards":GSObservedMenuCards.array?:@[]}};}
 }
 static void GSStorageObserve(id object,NSMutableOrderedSet *classes){
  if(!object)return;NSString *name=NSStringFromClass(object_getClass(object));
@@ -82,6 +92,34 @@ static id GSStorageBentoController(id object,SEL selector){
  id controller=GSOriginalBentoController(object,selector);
  atomic_fetch_add(&GSBentoControllers,1);GSStorageObserve(controller,GSObservedControllerClasses);return controller;
 }
+static void GSStorageObserveCards(id cards,NSString *source){
+ if(![cards isKindOfClass:NSArray.class])return;
+ @synchronized(GSStorageLock){
+  if(![cards count])[GSObservedMenuCards addObject:[source stringByAppendingString:@":empty"]];
+  for(id card in cards)if(GSObservedMenuCards.count<24)[GSObservedMenuCards addObject:[NSString stringWithFormat:@"%@:%@",source,NSStringFromClass(object_getClass(card))]];
+ }
+}
+static BOOL GSStorageShouldShow(id object,SEL selector){
+ BOOL show=GSOriginalShouldShow(object,selector);
+ atomic_fetch_add(&GSShouldShowCalls,1);if(show)atomic_fetch_add(&GSShouldShowYes,1);return show;
+}
+static id GSStorageCardData(id object,SEL selector){
+ id card=GSOriginalStorageCardData(object,selector);
+ atomic_fetch_add(&GSStorageCardCalls,1);if(card)atomic_fetch_add(&GSStorageCardNonNil,1);
+ if(GSStorageMethod(object_getClass(object),@"quota","@16@0:8")&&((id(*)(id,SEL))objc_msgSend)(object,NSSelectorFromString(@"quota")))atomic_fetch_add(&GSQuotaPresent,1);
+ return card;
+}
+static id GSStoragePhotosCards(id object,SEL selector){
+ id cards=GSOriginalPhotosCards(object,selector);
+ atomic_fetch_add(&GSPhotosCardReads,1);GSStorageObserveCards(cards,@"photos");return cards;
+}
+static id GSStorageAggregatorCards(id object,SEL selector){
+ id cards=GSOriginalAggregatorCards(object,selector);
+ atomic_fetch_add(&GSAggregatorCardReads,1);GSStorageObserveCards(cards,@"aggregator");return cards;
+}
+static BOOL GSStorageBentoEnabled(id object,SEL selector){
+ BOOL enabled=GSOriginalBentoEnabled(object,selector);atomic_store(&GSBentoEnabled,enabled);return enabled;
+}
 static void GSStorageCellUpdate(id object,SEL selector,id item){
  atomic_fetch_add(&GSCellUpdates,1);
  if(GSStorageItem(item))atomic_store(&GSRenderedState,((NSInteger(*)(id,SEL))objc_msgSend)(item,NSSelectorFromString(@"storageState")));
@@ -114,7 +152,7 @@ void GSInstallUnlimitedStorage(void){
  if(!modelTitle&&(!GSStorageMethod(NSClassFromString(@"OGLAccountSelectorStorageCardItem"),@"storageState","q16@0:8")||
   !GSStorageMethod(object_getClass(NSClassFromString(@"OGLAccountSelectorStorageCardCell")),@"titleTextWithStorageItem:","@24@0:8@16")||
   !GSStorageMethod(NSClassFromString(@"OGLAccountSelectorStorageCardCell"),@"updateWithItem:","v24@0:8@16"))){GSStorageStatus=@"incompatible-legacy-cell-abi";return;}
- GSStorageLock=[NSObject new];GSObservedCardClasses=[NSMutableOrderedSet orderedSet];GSObservedControllerClasses=[NSMutableOrderedSet orderedSet];
+ GSStorageLock=[NSObject new];GSObservedCardClasses=[NSMutableOrderedSet orderedSet];GSObservedControllerClasses=[NSMutableOrderedSet orderedSet];GSObservedMenuCards=[NSMutableOrderedSet orderedSet];
  // UIKit and Bento share these display getters. Preserve the stored model,
  // account quota and callback identities.
  GSOriginalModelState=(void *)GSStorageReplace(data,NSSelectorFromString(@"storageState"),(IMP)GSStorageModelState);
@@ -130,5 +168,14 @@ void GSInstallUnlimitedStorage(void){
  if(GSStorageMethod(bento,@"makeBentoAccountMenuViewController","@16@0:8")){
   GSOriginalBentoController=(void *)GSStorageReplace(bento,NSSelectorFromString(@"makeBentoAccountMenuViewController"),(IMP)GSStorageBentoController);GSBentoObserved=YES;
  }
+ // Optional passive probes; each returns the native value unchanged.
+ Class photos=NSClassFromString(@"PHSMyAccountMenuDataSource");
+ if(GSStorageMethod(photos,@"shouldShowStorageCard","B16@0:8"))GSOriginalShouldShow=(void *)GSStorageReplace(photos,NSSelectorFromString(@"shouldShowStorageCard"),(IMP)GSStorageShouldShow);
+ if(GSStorageMethod(photos,@"storageCardData","@16@0:8"))GSOriginalStorageCardData=(void *)GSStorageReplace(photos,NSSelectorFromString(@"storageCardData"),(IMP)GSStorageCardData);
+ if(GSStorageMethod(photos,@"accountMenuCardData","@16@0:8"))GSOriginalPhotosCards=(void *)GSStorageReplace(photos,NSSelectorFromString(@"accountMenuCardData"),(IMP)GSStoragePhotosCards);
+ Class aggregator=NSClassFromString(@"_TtC102googlemac_iPhone_Shared_OneGoogle_AccountSelector_Cards_Implementation_OGLAggregatorCardDataSourceImpl31OGLAggregatorCardDataSourceImpl");
+ if(GSStorageMethod(aggregator,@"accountMenuCardData","@16@0:8"))GSOriginalAggregatorCards=(void *)GSStorageReplace(aggregator,NSSelectorFromString(@"accountMenuCardData"),(IMP)GSStorageAggregatorCards);
+ Class bentoService=NSClassFromString(@"OGLBentoServiceImpl");
+ if(GSStorageMethod(bentoService,@"bentoAccountMenuEnabled","B16@0:8"))GSOriginalBentoEnabled=(void *)GSStorageReplace(bentoService,NSSelectorFromString(@"bentoAccountMenuEnabled"),(IMP)GSStorageBentoEnabled);
  GSStorageInstalled=YES;GSStorageStatus=@"installed";
 }
