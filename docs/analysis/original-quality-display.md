@@ -141,11 +141,8 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
      `updateBackupStatusUI`、レイアウト時に適用し、`rowTexts` に `rows[N]` の構造を
      記録します。置換後の文言に含まれる候補（英語の「Original quality」）は
      再置換で伸び続けるため使いません。
-   - SwiftUI は工場の後に描画するため、`PHSExtendedPhoto.serverStoragePolicy` は
-     メインスレッドでスコープ外でも、直近にスコープを開いたバックアップ済み
-     詳細画面の写真で原本確認済みの場合に限り 3 を返します
-     （`displayServerPolicyReadsOutside` / `displayServerPolicyOutsideOverrides`）。
-     他の写真、他スレッド、未バックアップの画面は純正値のままです（7 で変更）。
+   - SwiftUI は工場の後に描画するため、`PHSExtendedPhoto.serverStoragePolicy` を
+     メインスレッドのスコープ外でも補正していました（7 で拡大、9 で撤去）。
 
 7. **ポリシー対応の訂正と全インスタンス補正**: 6 回目の実機診断（22 行構築、
    124 回走査）では `saver:` に「Original quality」「Express」が学習されていました。
@@ -161,11 +158,10 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
      無変更）。節約文言の学習も policy 2 の subtitle を基準にします。
    - `serverStoragePolicy`: スコープ内 336 読取が全て置換され、スコープ外メイン
      スレッドの読取は 0 件、それでも表示は節約でした。以前の規則が数えずに除外して
-     いた読者（同じ写真の別 `PHSExtendedPhoto` インスタンス、別スレッド）しか残り
-     ません。観測された唯一の節約値であり hasOriginalBytes はサーバー自身の原本
-     モデルなので、サーバー写真が原本確認済みの全インスタンスで全スレッド 3 を
-     返し、読取箇所を `displayServerPolicyReads` / `...ReadsOutside` /
-     `...ReadsOtherInstance` / `...ReadsOffMain` と対応する `...Overrides` で数えます。
+     いた読者（同じ写真の別 `PHSExtendedPhoto` インスタンス、別スレッド）を疑い、
+     原本確認済みの全インスタンス・全スレッドで 3 を返すよう拡大しました。
+     読取箇所は `displayServerPolicyReads` / `...ReadsOutside` /
+     `...ReadsOtherInstance` / `...ReadsOffMain` で数えます。この拡大は 9 で撤去しました。
    - レイアウト時に `layout-rows[N]`（工場後に設定された expandedContent を含む）、
      `info[N]`（`infoContentViewModels`）、`localAssetInfo`、`learnMoreLinks`
      （`stackViewLearnMoreLinks`）の構造を `rowTexts`（上限 96）に記録し、
@@ -195,6 +191,16 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
      に `a11y: …` として記録します（`panelA11yElements`、上限 32 件）。次の診断で
      画面上の文言とその出所を直接突き合わせられます。
 
+9. **`serverStoragePolicy` の置換を撤去**: `PHSExtendedPhoto.serverStoragePolicy` は
+   アップロード commit の field 7（1 節約、3 オリジナル）として送られるクライアント
+   enum で、同期・「容量を解放」・節約画質への変換・容量判定からも読まれ得ます。
+   7 の全インスタンス・全スレッド置換は表示以外の挙動を変える恐れがあり、しかも
+   7 回目の実機診断では置換後も表示は節約のままで、表示を直したのは 8 でした。
+   そのため getter は常に純正値を返し、スコープ内外の読取件数と
+   スコープ内の観測値（`displayServerPolicy<N>`）の記録だけを残します。
+   この値から作られた節約文言は、8 の initializer 補正と文字列フォールバックが
+   表示上で置き換えます。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
 一致しない場合、その getter だけを省略します。
@@ -204,13 +210,14 @@ No / Unknown / Maybe、未バックアップ、部分バックアップでは、
 - `stackQualityAvailable`: 行工場と原本 ABI が一致し hook を設置したか。
 - `stackBackupRows` / `stackBackupUpdates`: 行構築と後更新の回数。`stackRowClasses` は観測した行クラス名（最大 8 件）。
 - `displayPolicyReads` / `displayPolicyOverrides`: スコープ内の storagePolicy 読取とオリジナル（2）への置換件数。`displayPolicyReadsOutside` / `displayPolicyReadsOffMain` はスコープ外の純正読取。
-- `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayServerPolicyOverrides` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数、観測値、3 への置換件数。
+- `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数と観測値。`displayServerPolicyReadsOutside` / `...ReadsOtherInstance` / `...ReadsOffMain` はスコープ外の読取件数。`serverStoragePolicy` は置換しません（9）。
 - `stackRowCorrected`: 文字列フォールバックが行を書き換えた件数。
 
-実機では 1 の経路だけでは表示が変わらず、3 が必要でした。`displayServerPolicyOverrides`
-が増えれば 3 の経路、`stackRowCorrected` が増えれば 2 の経路で補正されています。どちらも 0 で表示が変わらない場合は、上記の読取件数から
-文言の出所を特定します。テストは storagePolicy 由来、serverStoragePolicy 由来、
-純正 subtitle 複写の 3 種の文言源、スコープ外の読取が純正値であること、
+実機（7.92.0）で表示を直したのは行モデルの initializer 補正（`initCorrected.subtitle`）
+です。`stackRowCorrected` が増えれば文字列フォールバックで補正されています。どちらも
+0 で表示が変わらない場合は、上記の読取件数から文言の出所を特定します。テストは
+storagePolicy 由来、serverStoragePolicy 由来（値は置換せず文言だけ補正）、
+純正 subtitle 複写の 3 種の文言源、`serverStoragePolicy` が全ての読取箇所で純正値であること、
 入れ子の診断読取が純正値を数えること、未バックアップ・部分・No での不変を検証します。
 
 ## 差分同期の信頼性

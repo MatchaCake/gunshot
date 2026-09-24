@@ -304,24 +304,20 @@ int main(void){@autoreleasepool{
  photo.storagePolicy=2;
 #endif
  // The factory reads the stored client enum through PHSExtendedPhoto.serverStoragePolicy
- // (device: displayServerPolicy1 while storagePolicy was already overridden).
- details.labelSource=LabelFromExtendedPhoto;NSUInteger textFixes=Count(@"stackRowCorrected");BuildRow();
- assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayServerPolicyReads")>=1&&Count(@"displayServerPolicyOverrides")>=1&&Count(@"stackRowCorrected")==textFixes);
- // Outside the scope (device: the SwiftUI stack renders after the factories and
- // its reads were never counted), the correction holds for every instance of a
- // confirmed original on every thread, and each read site is counted.
- assert(details.extendedPhoto.serverStoragePolicy==3&&Count(@"displayServerPolicyOutsideOverrides")>=1);
+ // (device: displayServerPolicy1). The upload/sync value is never altered, even in
+ // scope; the saver words it produces are replaced by the text fallback instead.
+ details.labelSource=LabelFromExtendedPhoto;NSUInteger textFixes=Count(@"stackRowCorrected"),serverReads=Count(@"displayServerPolicyReads"),serverSaver=Count(@"displayServerPolicy1");BuildRow();
+ assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&Count(@"displayServerPolicyReads")>serverReads&&Count(@"displayServerPolicy1")>serverSaver&&Count(@"stackRowCorrected")>textFixes);
+ assert(Count(@"displayServerPolicyOverrides")==0);
+ // Every other site reads the stored value too, and each read site is counted.
+ assert(details.extendedPhoto.serverStoragePolicy==1&&Count(@"displayServerPolicyReadsOutside")>=1);
  PHSExtendedPhoto *twin=[PHSExtendedPhoto new];twin.serverPhoto=photo;twin.serverStoragePolicy=1;
- assert(twin.serverStoragePolicy==3&&Count(@"displayServerPolicyReadsOtherInstance")>=1&&Count(@"displayServerPolicyOtherInstanceOverrides")>=1);
+ assert(twin.serverStoragePolicy==1&&Count(@"displayServerPolicyReadsOtherInstance")>=1);
  __block int background=0;dispatch_group_t group=dispatch_group_create();
  dispatch_group_async(group,dispatch_get_global_queue(0,0),^{background=details.extendedPhoto.serverStoragePolicy;});
  dispatch_group_wait(group,DISPATCH_TIME_FOREVER);
- assert(background==3&&Count(@"displayServerPolicyReadsOffMain")>=1&&Count(@"displayServerPolicyOffMainOverrides")>=1);
- // Not an original: native on every site.
- photo.hasOriginalBytes=2;assert(details.extendedPhoto.serverStoragePolicy==1&&twin.serverStoragePolicy==1);
- dispatch_group_async(group,dispatch_get_global_queue(0,0),^{background=details.extendedPhoto.serverStoragePolicy;});
- dispatch_group_wait(group,DISPATCH_TIME_FOREVER);assert(background==1);
- photo.hasOriginalBytes=1;
+ assert(background==1&&Count(@"displayServerPolicyReadsOffMain")>=1);
+ details.extendedPhoto.serverStoragePolicy=3;assert(details.extendedPhoto.serverStoragePolicy==3);details.extendedPhoto.serverStoragePolicy=1;
  // The factory copies the native subtitle wording: the row text is replaced, the quota title kept.
  details.labelSource=LabelFromNativeSubtitle;NSUInteger corrections=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&[row.title isEqual:details.original.backupStatus]);
@@ -351,13 +347,10 @@ int main(void){@autoreleasepool{
   details.labelSource=source;
   photo.hasOriginalBytes=2;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
   photo.hasOriginalBytes=1;photo.isPartialBackup=YES;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
-  // Not backed up: no scope, no text correction. The client enum follows the
-  // server photo rather than the controller, so a photo the server holds in
-  // original reads original wherever it is shown.
-  photo.isPartialBackup=NO;details.isBackedUp=NO;BuildRow();
-  NSString *expected=source==LabelFromExtendedPhoto?OriginalText:SaverText;
-  assert([row.attributes[0]isEqual:expected]);
-  [details updateBackupStatusUI];assert([row.attributes[0]isEqual:expected]);
+  // Not backed up: no scope, no text correction, and the stored client enum is
+  // read unchanged, so every source keeps the native saver row.
+  photo.isPartialBackup=NO;details.isBackedUp=NO;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
+  [details updateBackupStatusUI];assert([row.attributes[0]isEqual:SaverText]);
   details.isBackedUp=YES;
  }
  assert(Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides")==overrides&&Count(@"stackRowCorrected")==corrections);

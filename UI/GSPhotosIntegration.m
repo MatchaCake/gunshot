@@ -32,7 +32,6 @@ static _Thread_local NSUInteger GSForcedPolicy;
 // subtitle rebuilt with policy 1 differs from it by exactly those words.
 // Earlier builds forced 1 inside the row factories, producing saver wording.
 static const unsigned char GSServerOriginalPolicy=2;
-static const int GSClientOriginalPolicy=3;
 static unsigned char (*GSOriginalStoragePolicy)(id,SEL), (*GSOriginalQuotaChargeable)(id,SEL);
 static int (*GSOriginalServerStoragePolicy)(id,SEL);
 static id (*GSOriginalStatusModel)(id,SEL), (*GSOriginalBackupRow)(id,SEL,id,id,id,id,id), (*GSOriginalStackModels)(id,SEL,id,id);
@@ -40,7 +39,7 @@ static void (*GSOriginalBackupStatusUI)(id,SEL), (*GSOriginalSetStackModels)(id,
 // Probed wordings keyed by the native subtitle they were derived from.
 static NSMutableDictionary<NSString *,NSArray<NSString *> *> *GSSaverWordingCache;
 // The photo of the details controller that last opened the display scope
-// (backed up); main-thread reads outside the scope are corrected only for it.
+// (backed up); main-thread reads of it outside the scope are counted as Outside.
 static __weak id GSActiveExtendedPhoto;
 // The details controller whose display scope is open on this thread. Read only
 // while GSDisplayScope is non-zero, when the factory that opened it still holds
@@ -145,26 +144,19 @@ static unsigned char GSDisplayStoragePolicy(id photo,SEL selector){
  GSCount(@"displayPolicyOverrides");return GSServerOriginalPolicy;
 }
 // PHSExtendedPhoto.serverStoragePolicy is the client enum (the value the upload
-// commit carries: 1 saver, 3 original) and is stored at load, so it does not
-// follow the getter above. Device counters (2026-09-24) show the details row
-// reads it once per build and it returned 1 while storagePolicy was overridden.
-// Device counters (2026-09-24, 4th build) show 51 in-scope reads overridden and
-// the panel still reading Storage saver: the SwiftUI details stack renders
-// after the factories return. The 6th diagnostics (336 in-scope reads, all
-// overridden, no counted read outside the scope, panel still saver) leave only
-// readers the previous rule excluded without counting: another PHSExtendedPhoto
-// instance of the same photo, or another thread. It is the sole saver-valued
-// datum observed, and hasOriginalBytes is the server's own original model, so
-// every instance whose server photo confirms original reads 3 on every thread.
-// The read site is counted so the device can name the reader.
-static int GSDisplayServerStoragePolicy(id extended,SEL selector){
+// commit carries: 1 saver, 3 original). It feeds upload, sync and storage
+// conversion, so it is never altered, not even inside the display scope.
+// Device builds 4-7 overrode it (in scope, then on every instance and thread)
+// and the panel still read Storage saver; the 8th build fixed the words at the
+// row-model initializer instead. Reads are still counted by site and in-scope
+// value so a device export can name any reader.
+static int GSCountedServerStoragePolicy(id extended,SEL selector){
  int value=GSOriginalServerStoragePolicy(extended,selector);
  if(GSNativeReads)return value;
  NSString *site=GSDisplayScope?@"":!NSThread.isMainThread?@"OffMain":extended&&extended==GSActiveExtendedPhoto?@"Outside":@"OtherInstance";
  GSCount([@"displayServerPolicyReads" stringByAppendingString:site]);
  if(GSDisplayScope)GSCount([NSString stringWithFormat:@"displayServerPolicy%d",value]);
- if(value==GSClientOriginalPolicy||!GSPhotoConfirmsOriginal(GSGet(extended,@"serverPhoto")))return value;
- GSCount([NSString stringWithFormat:@"displayServerPolicy%@Overrides",site]);return GSClientOriginalPolicy;
+ return value;
 }
 // Diagnostics only: whether the panel consults the derived flag. Never altered.
 static BOOL (*GSOriginalNeedsFullBackup)(id,SEL);
@@ -548,7 +540,7 @@ static void GSInstallStackQuality(Class details){
  // Optional: the policy getter is the display source; the rest identify the path.
  if(GSPhotosHasMethod(photo,@"storagePolicy","C16@0:8"))GSOriginalStoragePolicy=(void *)GSReplace(photo,@"storagePolicy",(IMP)GSDisplayStoragePolicy);
  if(GSPhotosHasMethod(photo,@"quotaChargeable","C16@0:8"))GSOriginalQuotaChargeable=(void *)GSReplace(photo,@"quotaChargeable",(IMP)GSDisplayQuotaChargeable);
- if(GSPhotosHasMethod(extended,@"serverStoragePolicy","i16@0:8"))GSOriginalServerStoragePolicy=(void *)GSReplace(extended,@"serverStoragePolicy",(IMP)GSDisplayServerStoragePolicy);
+ if(GSPhotosHasMethod(extended,@"serverStoragePolicy","i16@0:8"))GSOriginalServerStoragePolicy=(void *)GSReplace(extended,@"serverStoragePolicy",(IMP)GSCountedServerStoragePolicy);
  if(GSPhotosHasMethod(extended,@"needsFullBackup","B16@0:8"))GSOriginalNeedsFullBackup=(void *)GSReplace(extended,@"needsFullBackup",(IMP)GSCountedNeedsFullBackup);
  if(GSPhotosHasMethod(details,@"setDetailsStackViewModels:","v24@0:8@16"))GSOriginalSetStackModels=(void *)GSReplace(details,@"setDetailsStackViewModels:",(IMP)GSSetStackModels);
  if(GSPhotosHasMethod(details,@"updateBackupStatusUI","v16@0:8"))GSOriginalBackupStatusUI=(void *)GSReplace(details,@"updateBackupStatusUI",(IMP)GSBackupStatusUI);
