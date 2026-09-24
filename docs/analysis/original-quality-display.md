@@ -95,6 +95,19 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    この値から作られています。同じスコープ内で、原本確認済みの写真については
    3 を返します（`displayServerPolicyOverrides`）。
 
+4. **レイアウト時のラベル補正**: 2 回目の実機診断（10 行構築）では 3 つの getter が
+   すべて置換され（`displayPolicyOverrides=30`、`displayServerPolicyOverrides=10`）、
+   `stackRowCorrected` は 0 のまま、表示は「保存容量の節約」のままでした。行モデルは
+   純正文言を平文で保持しておらず、文言の出所は静的索引だけでは特定できません。
+   そこで詳細コントローラの `viewDidLayoutSubviews`（UIViewController から継承、
+   このクラスだけに追加）と行構築・`updateBackupStatusUI` の直後に、ビュー階層の
+   UILabel / UITextView を走査し、このコントローラの純正画質文言を含む部分だけを
+   置き換えます。attributed text は属性を保持します。置換後は文言を含まないため
+   再レイアウトで収束します。診断 `panelTexts` には走査したラベル文字列（数字は `#`、
+   `/` やファイル拡張子を含むものは除外、60 文字まで、最大 16 件）と
+   `native-quality:` 付きの純正文言を記録します。`panelWalks` / `panelLabelsSeen` /
+   `panelLabelCorrected` で走査・発見・置換件数を示します。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
 一致しない場合、その getter だけを省略します。

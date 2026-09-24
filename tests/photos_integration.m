@@ -102,6 +102,18 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 #else
 #define GSDetailsSuperclass NSObject
 #endif
+@interface UIView : NSObject
+@property(nonatomic,strong) NSArray *subviews;
+@end
+@implementation UIView @end
+@interface UILabel : UIView
+@property(nonatomic,copy) NSString *text;
+@property(nonatomic,copy) NSAttributedString *attributedText;
+@end
+@implementation UILabel
+- (void)setText:(NSString *)text{_text=[text copy];_attributedText=text?[[NSAttributedString alloc]initWithString:text]:nil;}
+- (void)setAttributedText:(NSAttributedString *)text{_attributedText=[text copy];_text=text.string;}
+@end
 static NSString *const SaverText=@"保存容量の節約",*const OriginalText=@"オリジナル画質";
 typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle};
 @interface PHSOneUpInfoPanelDetailsViewController : GSDetailsSuperclass
@@ -112,6 +124,9 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
 @property(nonatomic,strong) NSMutableArray *detailsStackViewModels;
 @property(nonatomic,strong) NSString *backupStatusViewModelID;
 @property(nonatomic) NSUInteger rowBuilds;
+@property(nonatomic,strong) UIView *viewIfLoaded;
+@property(nonatomic) NSUInteger layouts;
+- (void)viewDidLayoutSubviews;
 - (id)getBackupStatusModelData;
 - (id)createBackupViewModel:(id)item mediaItem:(id)media serverPhoto:(id)photo localAsset:(id)asset storeResult:(id)store;
 - (id)createStackViewModelsForExtendedPhoto:(id)photo preferredMediaItem:(id)item;
@@ -144,6 +159,7 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  self.detailsStackViewModels=[NSMutableArray array];
  return @[[self createBackupViewModel:item mediaItem:nil serverPhoto:self.extendedPhoto.serverPhoto localAsset:nil storeResult:nil]];
 }
+- (void)viewDidLayoutSubviews{self.layouts++;}
 - (void)updateBackupStatusUI{
  for(PHSOneUpInfoPanelDetailsStackViewModel *row in self.detailsStackViewModels)
   if([row.id isEqual:self.backupStatusViewModelID])row.attributes=@[[self qualityTextForPhoto:self.extendedPhoto.serverPhoto]];
@@ -257,6 +273,33 @@ int main(void){@autoreleasepool{
  }
  assert(Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides")==overrides&&Count(@"stackRowCorrected")==corrections);
  assert([details.original.backupStatusSubtitle isEqual:SaverText]);
+ // Layout pass: whatever structure renders the row, a visible label holding the
+ // native quality wording is corrected after the details view lays out.
+ assert([GSPhotosIntegrationSnapshot()[@"panelLayoutAvailable"]boolValue]);
+ UILabel *quality=[UILabel new],*name=[UILabel new],*size=[UILabel new],*styled=[UILabel new];
+ name.text=@"IMG_0042.PNG";size.text=@"3.2 MB";
+ UIView *cell=[UIView new];cell.subviews=@[quality,styled];
+ UIView *root=[UIView new];root.subviews=@[cell,name,size];details.viewIfLoaded=root;
+ NSDictionary *bold=@{@"GSFixtureWeight":@"bold"};
+ void(^resetLabels)(void)=^{quality.text=[@"バックアップ済み · " stringByAppendingString:SaverText];
+  styled.attributedText=[[NSAttributedString alloc]initWithString:SaverText attributes:bold];};
+ NSString *fixed=GSL(@"Original quality (original data available)");
+ resetLabels();NSUInteger labelFixes=Count(@"panelLabelCorrected");
+ [details viewDidLayoutSubviews];
+ assert(details.layouts==1); // Native layout still runs first.
+ assert([quality.text isEqual:[@"バックアップ済み · " stringByAppendingString:fixed]]);
+ assert([styled.text isEqual:fixed]&&[[styled.attributedText attribute:@"GSFixtureWeight" atIndex:0 effectiveRange:NULL]isEqual:@"bold"]);
+ assert([name.text isEqual:@"IMG_0042.PNG"]&&[size.text isEqual:@"3.2 MB"]&&Count(@"panelLabelCorrected")==labelFixes+2);
+ NSArray *texts=GSPhotosIntegrationSnapshot()[@"panelTexts"];
+ assert([texts containsObject:@"#.# MB"]&&![texts containsObject:@"IMG_####.PNG"]); // Digits masked, file names dropped.
+ assert([texts containsObject:[@"native-quality: " stringByAppendingString:SaverText]]);
+ // A second pass finds nothing left to replace, so layout converges.
+ [details viewDidLayoutSubviews];assert(Count(@"panelLabelCorrected")==labelFixes+2);
+ // Not original / partial / not backed up: labels stay native.
+ photo.hasOriginalBytes=2;resetLabels();[details viewDidLayoutSubviews];assert([styled.text isEqual:SaverText]);
+ photo.hasOriginalBytes=1;photo.isPartialBackup=YES;[details viewDidLayoutSubviews];assert([styled.text isEqual:SaverText]);
+ photo.isPartialBackup=NO;details.isBackedUp=NO;[details viewDidLayoutSubviews];assert([styled.text isEqual:SaverText]);
+ details.isBackedUp=YES;details.viewIfLoaded=nil;
  photo.storagePolicy=1;
 #endif
  PHSUserItemsSynchronizer *other=[PHSUserItemsSynchronizer new];other.accountID=@"other";[other fetchData];
@@ -279,6 +322,6 @@ int main(void){@autoreleasepool{
  assert(released); // Alive through the integration's map, not this test.
  GSRefreshNativeLibrary();Drain(^BOOL{return released.fetches==7;});
  assert(other.fetches==2);
- NSLog(@"PASS server-confirmed original label for every storage policy, details-stack row correction on policy/enum/text sources with native reads outside the display scope, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-preserved and release-surviving refresh");
+ NSLog(@"PASS server-confirmed original label for every storage policy, details-stack row correction on policy/enum/text sources, layout-time label correction with masked panel texts with native reads outside the display scope, Unknown/No/Maybe/partial safeguards, quota preservation, account-bound coalesced native delta sync, native-fetch-preserved and release-surviving refresh");
  return 0;
 }}

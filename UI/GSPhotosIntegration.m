@@ -28,6 +28,9 @@ static int (*GSOriginalServerStoragePolicy)(id,SEL);
 static id (*GSOriginalStatusModel)(id,SEL), (*GSOriginalBackupRow)(id,SEL,id,id,id,id,id), (*GSOriginalStackModels)(id,SEL,id,id);
 static void (*GSOriginalBackupStatusUI)(id,SEL);
 static NSMutableOrderedSet *GSObservedRowClasses;
+static NSMutableOrderedSet *GSPanelTexts;
+static void (*GSOriginalPanelLayout)(id,SEL);
+static void GSSchedulePanelCorrection(id controller);
 static BOOL GSMethod(id object,NSString *name,const char *encoding){
  Method m=class_getInstanceMethod(object_getClass(object),NSSelectorFromString(name));
  return m&&!strcmp(method_getTypeEncoding(m),encoding);
@@ -37,7 +40,8 @@ static void GSCount(NSString *key){@synchronized(GSLock){GSCounts[key]=@([GSCoun
 NSDictionary *GSPhotosIntegrationSnapshot(void){
  if(!GSInstalled)return @{@"qualityAvailable":@NO,@"syncAvailable":@NO};
  @synchronized(GSLock){NSMutableDictionary *d=[GSCounts mutableCopy];d[@"qualityAvailable"]=GSQualityAvailable?@YES:@NO;d[@"syncAvailable"]=GSSyncAvailable?@YES:@NO;
-  d[@"stackQualityAvailable"]=GSStackAvailable?@YES:@NO;d[@"stackRowClasses"]=GSObservedRowClasses.array?:@[];return d;}
+  d[@"stackQualityAvailable"]=GSStackAvailable?@YES:@NO;d[@"stackRowClasses"]=GSObservedRowClasses.array?:@[];
+  d[@"panelTexts"]=GSPanelTexts.array?:@[];d[@"panelLayoutAvailable"]=GSOriginalPanelLayout?@YES:@NO;return d;}
 }
 static void GSFlushRefresh(void){
  if(!GSPending||GSScheduled)return;GSScheduled=YES;
@@ -182,6 +186,7 @@ static id GSBackupRow(id controller,SEL selector,id model,id item,id serverPhoto
  GSObserveRow(row);
  id photo=[serverPhoto isKindOfClass:NSClassFromString(@"PHSServerPhoto")]?serverPhoto:GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto");
  if(row&&entered&&GSPhotoConfirmsOriginal(photo)&&GSCorrectRow(row,GSNativeQualityText(controller)))GSCount(@"stackRowCorrected");
+ if(entered)GSSchedulePanelCorrection(controller);
  return row;
 }
 static id GSStackModels(id controller,SEL selector,id photo,id item){
@@ -191,11 +196,69 @@ static id GSStackModels(id controller,SEL selector,id photo,id item){
 static void GSBackupStatusUI(id controller,SEL selector){
  GSCount(@"stackBackupUpdates");NSUInteger entered=GSEnterDisplay(controller);
  @try{GSOriginalBackupStatusUI(controller,selector);}@finally{GSDisplayScope-=entered;}
+ GSSchedulePanelCorrection(controller);
  if(!GSControllerBackedUp(controller)||!GSPhotoConfirmsOriginal(GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto")))return;
  id rowID=GSGet(controller,@"backupStatusViewModelID");NSArray *rows=GSGet(controller,@"detailsStackViewModels");
  if(!rowID||![rows isKindOfClass:NSArray.class])return;
  NSString *from=GSNativeQualityText(controller);
  for(id row in rows)if([GSGet(row,@"id")isEqual:rowID]&&GSCorrectRow(row,from))GSCount(@"stackRowCorrected");
+}
+// Layout-time correction. Device counters (2026-09-24, 10 rows) show every
+// policy getter overridden in the row factory while the panel still read
+// Storage saver, and the row model held no plain-string copy of the native
+// wording. The visible labels are the last common point, so after the
+// details view lays out, label text equal to this controller's native
+// quality wording is replaced. Only confirmed originals are touched; a label
+// that no longer contains the wording is left alone, so the pass converges.
+static _Thread_local BOOL GSWalkingPanel;
+static NSString *GSMaskedText(NSString *text){
+ if(![text isKindOfClass:NSString.class]||!text.length||[text containsString:@"/"])return nil;
+ if([text rangeOfString:@"\\.[A-Za-z0-9]{2,5}$" options:NSRegularExpressionSearch].location!=NSNotFound)return nil; // File names.
+ NSString *masked=[text stringByReplacingOccurrencesOfString:@"[0-9]" withString:@"#" options:NSRegularExpressionSearch range:NSMakeRange(0,text.length)];
+ return masked.length>60?[masked substringToIndex:60]:masked;
+}
+static void GSRecordPanelText(NSString *text){
+ NSString *masked=GSMaskedText(text);if(!masked)return;
+ @synchronized(GSLock){if(GSPanelTexts.count<16)[GSPanelTexts addObject:masked];}
+}
+static BOOL GSIsTextView(id view){
+ return [view isKindOfClass:NSClassFromString(@"UILabel")]||[view isKindOfClass:NSClassFromString(@"UITextView")];
+}
+static void GSCorrectPanelView(id view,NSString *from,NSString *to,NSUInteger depth,NSUInteger *budget){
+ if(!view||depth>48||!*budget)return;(*budget)--;
+ if(GSIsTextView(view)){
+  GSCount(@"panelLabelsSeen");
+  id attributed=GSGet(view,@"attributedText");NSString *text=GSGet(view,@"text");
+  GSRecordPanelText(text);
+  if([text isKindOfClass:NSString.class]&&[text containsString:from]){
+   BOOL replaced=NO;
+   if([attributed isKindOfClass:NSAttributedString.class]&&GSMethod(view,@"setAttributedText:","v24@0:8@16")){
+    id value=GSReplacedText(attributed,from,to,&replaced);
+    if(replaced)((void(*)(id,SEL,id))objc_msgSend)(view,NSSelectorFromString(@"setAttributedText:"),value);
+   }
+   if(!replaced&&GSMethod(view,@"setText:","v24@0:8@16")){
+    ((void(*)(id,SEL,id))objc_msgSend)(view,NSSelectorFromString(@"setText:"),[text stringByReplacingOccurrencesOfString:from withString:to]);replaced=YES;
+   }
+   if(replaced)GSCount(@"panelLabelCorrected");
+  }
+ }
+ NSArray *subviews=GSGet(view,@"subviews");
+ if([subviews isKindOfClass:NSArray.class])for(id child in [subviews copy])GSCorrectPanelView(child,from,to,depth+1,budget);
+}
+static void GSCorrectPanel(id controller){
+ if(GSWalkingPanel||!GSControllerBackedUp(controller)||!GSPhotoConfirmsOriginal(GSGet(GSGet(controller,@"extendedPhoto"),@"serverPhoto")))return;
+ id view=GSGet(controller,@"viewIfLoaded");if(!view)return;
+ NSString *from=GSNativeQualityText(controller);
+ GSRecordPanelText(from?[@"native-quality: " stringByAppendingString:from]:@"native-quality: <none>");
+ if(!from)return;
+ GSWalkingPanel=YES;GSCount(@"panelWalks");NSUInteger budget=600;
+ @try{GSCorrectPanelView(view,from,GSL(@"Original quality (original data available)"),0,&budget);}@finally{GSWalkingPanel=NO;}
+}
+static void GSPanelLayout(id controller,SEL selector){
+ GSOriginalPanelLayout(controller,selector);GSCorrectPanel(controller);
+}
+static void GSSchedulePanelCorrection(id controller){
+ __weak id weak=controller;dispatch_async(dispatch_get_main_queue(),^{GSCorrectPanel(weak);});
 }
 static IMP GSReplace(Class cls,NSString *name,IMP replacement){
  Method method=class_getInstanceMethod(cls,NSSelectorFromString(name));IMP original=method_getImplementation(method);
@@ -208,7 +271,9 @@ static void GSInstallStackQuality(Class details){
  NSString *factory=@"createBackupViewModel:mediaItem:serverPhoto:localAsset:storeResult:";
  if(!NSClassFromString(@"PHSOneUpInfoPanelDetailsStackViewModel")||!GSPhotosHasMethod(details,factory,"@56@0:8@16@24@32@40@48")||
     !GSPhotosHasMethod(photo,@"hasOriginalBytes","C16@0:8")||!GSPhotosHasMethod(photo,@"isPartialBackup","B16@0:8"))return;
- GSObservedRowClasses=[NSMutableOrderedSet orderedSet];
+ GSObservedRowClasses=[NSMutableOrderedSet orderedSet];GSPanelTexts=[NSMutableOrderedSet orderedSet];
+ // Inherited from UIViewController; GSReplace shadows it on the details class only.
+ if(GSPhotosHasMethod(details,@"viewDidLayoutSubviews","v16@0:8"))GSOriginalPanelLayout=(void *)GSReplace(details,@"viewDidLayoutSubviews",(IMP)GSPanelLayout);
  GSOriginalBackupRow=(void *)GSReplace(details,factory,(IMP)GSBackupRow);
  // Optional: the policy getter is the display source; the rest identify the path.
  if(GSPhotosHasMethod(photo,@"storagePolicy","C16@0:8"))GSOriginalStoragePolicy=(void *)GSReplace(photo,@"storagePolicy",(IMP)GSDisplayStoragePolicy);
