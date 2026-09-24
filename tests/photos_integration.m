@@ -115,7 +115,12 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 - (void)setAttributedText:(NSAttributedString *)text{_attributedText=[text copy];_text=text.string;}
 @end
 static NSString *const SaverText=@"保存容量の節約",*const OriginalText=@"オリジナル画質";
-typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle};
+typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPhoto,LabelFromNativeSubtitle,LabelFromHTMLSubtitle};
+// A row attribute rendered outside UIKit: only its model carries the words.
+@interface GSFixtureAttribute : NSObject
+@property(nonatomic,copy) NSString *text;
+@end
+@implementation GSFixtureAttribute @end
 @interface PHSOneUpInfoPanelDetailsViewController : GSDetailsSuperclass
 @property(nonatomic) _Bool isBackedUp;
 @property(nonatomic,strong) PHSExtendedPhoto *extendedPhoto;
@@ -124,6 +129,7 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
 @property(nonatomic,strong) NSMutableArray *detailsStackViewModels;
 @property(nonatomic,strong) NSString *backupStatusViewModelID;
 @property(nonatomic) NSUInteger rowBuilds;
+@property(nonatomic) BOOL frozenWords; // Words cached at load, like serverStoragePolicy.
 @property(nonatomic,strong) UIView *viewIfLoaded;
 @property(nonatomic) NSUInteger layouts;
 - (void)viewDidLayoutSubviews;
@@ -134,6 +140,13 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
 @end
 @implementation PHSOneUpInfoPanelDetailsViewController
 - (id)getBackupStatusModelData{
+ // 7.92.0 on device: the subtitle is HTML with a help link, and its quality
+ // words follow the storage policy read while it is built.
+ if(self.labelSource==LabelFromHTMLSubtitle){
+  NSString *words=NativePolicy(self.extendedPhoto.serverPhoto)==1?OriginalText:SaverText;
+  NSString *html=[NSString stringWithFormat:@"バックアップ済み（%@） <a href=\"https://support.google.com/photos/answer/6220791\">詳細</a>",words];
+  return [[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:self.original.backupStatus backupStatusSubtitle:html learnMoreLink:@"native-link"];
+ }
 #ifdef GS_TEST_LEGACY
  return [self contentViewModelWithTitle:self.original.backupStatus subtitle:self.original.backupStatusSubtitle subtitleContainsHTML:YES image:@"native-icon"];
 #else
@@ -146,6 +159,7 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  switch(self.labelSource){
   case LabelFromExtendedPhoto:return self.extendedPhoto.serverStoragePolicy==3?OriginalText:SaverText;
   case LabelFromNativeSubtitle:return self.original.backupStatusSubtitle;
+  case LabelFromHTMLSubtitle:return NativePolicy(photo)==1?OriginalText:SaverText;
   default:return NativePolicy(photo)==1?OriginalText:SaverText;
  }
 }
@@ -153,6 +167,12 @@ typedef NS_ENUM(NSInteger,LabelSource){LabelFromServerPhoto,LabelFromExtendedPho
  self.rowBuilds++;
  id status=[self getBackupStatusModelData]; // The stack path reuses the quota text and link.
  PHSOneUpInfoPanelDetailsStackViewModel *row=[[PHSOneUpInfoPanelDetailsStackViewModel alloc]initWithTitle:[status backupStatus] subtitle:[self qualityTextForPhoto:photo]];
+ if(self.labelSource==LabelFromHTMLSubtitle){
+  // Words in a nested model, fetched while storagePolicy is still native.
+  GSFixtureAttribute *words=[GSFixtureAttribute new],*link=[GSFixtureAttribute new];link.text=@"詳細";
+  words.text=self.frozenWords?SaverText:[self qualityTextForPhoto:photo];
+  row.attributes=@[words,link];
+ }
  self.backupStatusViewModelID=row.id;[self.detailsStackViewModels addObject:row];return row;
 }
 - (id)createStackViewModelsForExtendedPhoto:(id)photo preferredMediaItem:(id)item{
@@ -300,6 +320,30 @@ int main(void){@autoreleasepool{
  photo.hasOriginalBytes=1;photo.isPartialBackup=YES;[details viewDidLayoutSubviews];assert([styled.text isEqual:SaverText]);
  photo.isPartialBackup=NO;details.isBackedUp=NO;[details viewDidLayoutSubviews];assert([styled.text isEqual:SaverText]);
  details.isBackedUp=YES;details.viewIfLoaded=nil;
+#ifdef GS_TEST_POLICY_ON_BASE
+ // HTML subtitle (device 2026-09-24): the verbatim subtitle never occurs in the
+ // row, whose words sit in a nested model cached at load. The differing part of
+ // the native and display subtitles locates them; the link text stays.
+ photo.storagePolicy=2;photo.hasOriginalBytes=1;details.labelSource=LabelFromHTMLSubtitle;details.frozenWords=YES;
+ corrections=Count(@"stackRowCorrected");BuildRow();
+ GSFixtureAttribute *words=row.attributes[0],*link=row.attributes[1];
+ assert([words.text isEqual:fixed]&&[link.text isEqual:@"詳細"]&&Count(@"stackRowCorrected")==corrections+1);
+ NSArray *rowTexts=GSPhotosIntegrationSnapshot()[@"rowTexts"];
+ assert([rowTexts containsObject:[@"candidate: " stringByAppendingString:SaverText]]);
+ assert([rowTexts containsObject:[@"row.attributes[0].text<str>: " stringByAppendingString:SaverText]]);
+ for(NSString *entry in rowTexts)assert(![entry containsString:@"support.google.com"]);
+ [details updateBackupStatusUI];assert([words.text isEqual:fixed]&&[link.text isEqual:@"詳細"]);
+ // The HTML native subtitle is recorded with its link redacted, not dropped.
+ NSString *nativeLine=[NSString stringWithFormat:@"バックアップ済み（%@）",SaverText],*fixedLine=[NSString stringWithFormat:@"バックアップ済み（%@）",fixed];
+ UILabel *htmlLabel=[UILabel new];htmlLabel.text=nativeLine;
+ root.subviews=@[htmlLabel];details.viewIfLoaded=root;[details viewDidLayoutSubviews];
+ assert([htmlLabel.text isEqual:fixedLine]);
+ BOOL recorded=NO;for(NSString *entry in GSPhotosIntegrationSnapshot()[@"rowTexts"])if([entry hasPrefix:@"candidate: "]&&[entry containsString:@"<a>詳細<a>"])recorded=YES;
+ assert(recorded&&[GSPhotosIntegrationSnapshot()[@"panelViewClasses"]containsObject:@"UILabel"]);
+ // Not an original: the nested words stay native.
+ photo.hasOriginalBytes=2;details.frozenWords=NO;BuildRow();assert([[row.attributes[0] text]isEqual:SaverText]);
+ photo.hasOriginalBytes=1;details.labelSource=LabelFromServerPhoto;details.viewIfLoaded=nil;
+#endif
  photo.storagePolicy=1;
 #endif
  PHSUserItemsSynchronizer *other=[PHSUserItemsSynchronizer new];other.accountID=@"other";[other fetchData];

@@ -108,6 +108,23 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    `native-quality:` 付きの純正文言を記録します。`panelWalks` / `panelLabelsSeen` /
    `panelLabelCorrected` で走査・発見・置換件数を示します。
 
+5. **HTML subtitle と入れ子の行モデル**: 3 回目の実機診断（7 行構築、41 回走査）では
+   `panelLabelsSeen=34`（走査 1 回あたり 1 未満）、`panelTexts` は `Details` のみで、
+   走査のたびに記録されるはずの `native-quality:` も欠落していました。記録から外れる
+   のは `/` を含む文字列だけなので、純正 subtitle はヘルプリンク付きの HTML です。
+   HTML の文字列がそのまま描画文字列に現れることはないため、2 と 4 の照合は常に
+   失敗していました。行は UIKit のラベルではなく Swift 側で描画されています。
+   現在は次の候補を順に照合し、最初に一致したものだけを置き換えます。
+   - 純正 subtitle と、表示スコープ内（画質 getter 置換中）で作った subtitle の差分部分。
+     差分の境界が語の途中にある場合は使いません（ローカライズされた画質語そのもの）。
+   - リンクを除いた平文、末尾記号を除いた平文、リンクを含む平文、元の文字列。
+   リンク文字列（「詳細」など）だけが候補になることはありません。置換対象は行の
+   `title` / `attributes` / `expandedContent` と、その中の属性モデルの
+   `text` / `title` / `subtitle` / `attributedText` です。
+   診断 `rowTexts` には候補（`candidate:`）と置換前の行構造
+   （`row.attributes[0].text<str>: …` のようなパスと型）を、`panelViewClasses` には
+   走査したビューのクラス名を記録します。リンクの URL とタグは伏せ字にします。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
 発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
 一致しない場合、その getter だけを省略します。
