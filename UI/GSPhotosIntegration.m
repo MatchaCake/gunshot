@@ -22,6 +22,7 @@ static BOOL GSInstalled, GSQualityAvailable, GSStackAvailable, GSSyncAvailable, 
 // are used. Our own diagnostic reads stay native; nothing is stored.
 static _Thread_local NSUInteger GSDisplayScope, GSNativeReads;
 static const unsigned char GSStandardStoragePolicy=1;
+static const int GSClientOriginalPolicy=3;
 static unsigned char (*GSOriginalStoragePolicy)(id,SEL), (*GSOriginalQuotaChargeable)(id,SEL);
 static int (*GSOriginalServerStoragePolicy)(id,SEL);
 static id (*GSOriginalStatusModel)(id,SEL), (*GSOriginalBackupRow)(id,SEL,id,id,id,id,id), (*GSOriginalStackModels)(id,SEL,id,id);
@@ -111,10 +112,16 @@ static unsigned char GSDisplayStoragePolicy(id photo,SEL selector){
  if(native==GSStandardStoragePolicy||!GSPhotoConfirmsOriginal(photo))return native;
  GSCount(@"displayPolicyOverrides");return GSStandardStoragePolicy;
 }
-static int GSDisplayServerStoragePolicy(id photo,SEL selector){
- int value=GSOriginalServerStoragePolicy(photo,selector);
- if(GSDisplayScope&&!GSNativeReads){GSCount(@"displayServerPolicyReads");GSCount([NSString stringWithFormat:@"displayServerPolicy%d",value]);}
- return value;
+// PHSExtendedPhoto.serverStoragePolicy is the client enum (the value the upload
+// commit carries: 1 saver, 3 original) and is stored at load, so it does not
+// follow the getter above. Device counters (2026-09-24) show the details row
+// reads it once per build and it returned 1 while storagePolicy was overridden.
+static int GSDisplayServerStoragePolicy(id extended,SEL selector){
+ int value=GSOriginalServerStoragePolicy(extended,selector);
+ if(!GSDisplayScope||GSNativeReads)return value;
+ GSCount(@"displayServerPolicyReads");GSCount([NSString stringWithFormat:@"displayServerPolicy%d",value]);
+ if(value==GSClientOriginalPolicy||!GSPhotoConfirmsOriginal(GSGet(extended,@"serverPhoto")))return value;
+ GSCount(@"displayServerPolicyOverrides");return GSClientOriginalPolicy;
 }
 static unsigned char GSDisplayQuotaChargeable(id photo,SEL selector){
  if(GSDisplayScope&&!GSNativeReads)GSCount(@"displayQuotaReads");

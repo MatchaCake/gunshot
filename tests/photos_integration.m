@@ -62,13 +62,11 @@ static unsigned char NativePolicy(PHSServerPhoto *photo){
 }
 @interface PHSExtendedPhoto : NSObject
 @property(nonatomic,strong) PHSServerPhoto *serverPhoto;
-- (int)serverStoragePolicy;
+// The client enum (1 saver, 3 original) is stored when the photo loads; it does
+// not re-derive from the server policy getter, as the device counters showed.
+@property(nonatomic) int serverStoragePolicy;
 @end
-@implementation PHSExtendedPhoto
-// The client-side enum derives from the stored server policy: Standard maps to
-// the original-quality value, anything else to the saver value.
-- (int)serverStoragePolicy{return NativePolicy(self.serverPhoto)==1?3:1;}
-@end
+@implementation PHSExtendedPhoto @end
 @interface PHSOneUpInfoPanelBackupStatusData : NSObject
 @property(nonatomic,strong) NSString *backupStatus;
 @property(nonatomic,strong) NSString *backupStatusSubtitle;
@@ -169,7 +167,7 @@ int main(void){@autoreleasepool{
  GSInstallPhotosIntegration();assert([GSPhotosIntegrationSnapshot()[@"qualityAvailable"]boolValue]&&[GSPhotosIntegrationSnapshot()[@"syncAvailable"]boolValue]);
  PHSOneUpInfoPanelDetailsViewController *details=[PHSOneUpInfoPanelDetailsViewController new];details.isBackedUp=YES;
  details.original=[[PHSOneUpInfoPanelBackupStatusData alloc]initWithBackupStatus:@"保存容量を使用しません" backupStatusSubtitle:SaverText learnMoreLink:@"native-link"];
- details.extendedPhoto=[PHSExtendedPhoto new];PhotoWithStoragePolicy *photo=[PhotoWithStoragePolicy new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
+ details.extendedPhoto=[PHSExtendedPhoto new];details.extendedPhoto.serverStoragePolicy=1;PhotoWithStoragePolicy *photo=[PhotoWithStoragePolicy new];details.extendedPhoto.serverPhoto=photo;photo.storagePolicy=1;
  for(unsigned char value=0;value<4;value++){
   photo.hasOriginalBytes=value;id result=[details getBackupStatusModelData];
   if(value==1){assert(result!=details.original);assert([[result backupStatusSubtitle]isEqual:GSL(@"Original quality (original data available)")]);assert([[result backupStatus]isEqual:details.original.backupStatus]);}
@@ -234,11 +232,12 @@ int main(void){@autoreleasepool{
  assert(photo.storagePolicy==2); // Outside the factory the stored value is untouched.
  // The nested getBackupStatusModelData diagnostic saw the native value, not the display value.
  assert(Count(@"serverStoragePolicy2")==policy2+1&&Count(@"serverStoragePolicy1")==policy1);
- // The factory reads the client enum through PHSExtendedPhoto.serverStoragePolicy.
- details.labelSource=LabelFromExtendedPhoto;BuildRow();
- assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayServerPolicyReads")>=1&&Count(@"stackRowCorrected")==corrected);
- assert(details.extendedPhoto.serverStoragePolicy==1); // Native outside the scope.
 #endif
+ // The factory reads the stored client enum through PHSExtendedPhoto.serverStoragePolicy
+ // (device: displayServerPolicy1 while storagePolicy was already overridden).
+ details.labelSource=LabelFromExtendedPhoto;NSUInteger textFixes=Count(@"stackRowCorrected");BuildRow();
+ assert([row.attributes[0]isEqual:OriginalText]&&Count(@"displayServerPolicyReads")>=1&&Count(@"displayServerPolicyOverrides")>=1&&Count(@"stackRowCorrected")==textFixes);
+ assert(details.extendedPhoto.serverStoragePolicy==1); // Native outside the scope.
  // The factory copies the native subtitle wording: the row text is replaced, the quota title kept.
  details.labelSource=LabelFromNativeSubtitle;NSUInteger corrections=Count(@"stackRowCorrected");BuildRow();
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&[row.title isEqual:details.original.backupStatus]);
@@ -247,7 +246,7 @@ int main(void){@autoreleasepool{
  [details updateBackupStatusUI];
  assert([row.attributes[0]isEqual:GSL(@"Original quality (original data available)")]&&Count(@"stackBackupUpdates")>=1&&Count(@"stackRowCorrected")==corrections+2);
  // No / partial / not backed up leave the native row and never override the policy.
- NSUInteger overrides=Count(@"displayPolicyOverrides");corrections=Count(@"stackRowCorrected");
+ NSUInteger overrides=Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides");corrections=Count(@"stackRowCorrected");
  for(LabelSource source=LabelFromServerPhoto;source<=LabelFromNativeSubtitle;source++){
   details.labelSource=source;
   photo.hasOriginalBytes=2;BuildRow();assert([row.attributes[0]isEqual:SaverText]);
@@ -256,7 +255,7 @@ int main(void){@autoreleasepool{
   [details updateBackupStatusUI];assert([row.attributes[0]isEqual:SaverText]);
   details.isBackedUp=YES;
  }
- assert(Count(@"displayPolicyOverrides")==overrides&&Count(@"stackRowCorrected")==corrections);
+ assert(Count(@"displayPolicyOverrides")+Count(@"displayServerPolicyOverrides")==overrides&&Count(@"stackRowCorrected")==corrections);
  assert([details.original.backupStatusSubtitle isEqual:SaverText]);
  photo.storagePolicy=1;
 #endif

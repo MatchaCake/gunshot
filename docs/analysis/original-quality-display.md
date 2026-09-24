@@ -86,20 +86,29 @@ v0.2.5 の実機診断では `qualityLabelCorrected` が 10 件計上されて�
    置き換えます。Google の文字列キーや言語の決め打ちはしません。
    `updateBackupStatusUI` の後も追跡中の行に同じ処理を行います。
 
+3. **クライアント enum**: 最初の実機診断（2026-09-24、4 行構築）では
+   `displayPolicyOverrides=12`（storagePolicy は行ごとに 3 回読まれ全て置換）にも
+   かかわらず表示は変わらず、`displayServerPolicyReads=4` / `displayServerPolicy1=4`
+   でした。`PHSExtendedPhoto.serverStoragePolicy`（`i16@0:8`）は読み込み時に保存
+   されたクライアント enum（アップロード commit の field 7 と同じ値: 1=節約、
+   3=オリジナル）で、storagePolicy の getter から再導出されません。行の画質文言は
+   この値から作られています。同じスコープ内で、原本確認済みの写真については
+   3 を返します（`displayServerPolicyOverrides`）。
+
 No / Unknown / Maybe、未バックアップ、部分バックアップでは、スコープも置換も
-発生しません。`PHSServerPhoto.storagePolicy` の ABI が一致しない場合は 1 を
-省略し 2 だけを行います。
+発生しません。`PHSServerPhoto.storagePolicy` や `serverStoragePolicy` の ABI が
+一致しない場合、その getter だけを省略します。
 
 ### 診断
 
 - `stackQualityAvailable`: 行工場と原本 ABI が一致し hook を設置したか。
 - `stackBackupRows` / `stackBackupUpdates`: 行構築と後更新の回数。`stackRowClasses` は観測した行クラス名（最大 8 件）。
 - `displayPolicyReads` / `displayPolicyOverrides`: スコープ内の storagePolicy 読取と Standard への置換件数。
-- `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数と観測値。どの値から文言が作られているかの切り分け用。
+- `displayServerPolicyReads` / `displayServerPolicy<N>` / `displayServerPolicyOverrides` / `displayQuotaReads`: スコープ内で `serverStoragePolicy` / `quotaChargeable` が読まれた回数、観測値、3 への置換件数。
 - `stackRowCorrected`: 文字列フォールバックが行を書き換えた件数。
 
-`displayPolicyOverrides` が増えて `stackRowCorrected` が 0 なら 1 の経路、逆なら 2 の
-経路で補正されています。どちらも 0 で表示が変わらない場合は、上記の読取件数から
+実機では 1 の経路だけでは表示が変わらず、3 が必要でした。`displayServerPolicyOverrides`
+が増えれば 3 の経路、`stackRowCorrected` が増えれば 2 の経路で補正されています。どちらも 0 で表示が変わらない場合は、上記の読取件数から
 文言の出所を特定します。テストは storagePolicy 由来、serverStoragePolicy 由来、
 純正 subtitle 複写の 3 種の文言源、スコープ外の読取が純正値であること、
 入れ子の診断読取が純正値を数えること、未バックアップ・部分・No での不変を検証します。
