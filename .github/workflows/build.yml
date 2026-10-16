@@ -104,6 +104,7 @@ jobs:
         run: python3 scripts/verify-package.py '${{ matrix.scheme }}'
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: gotohp-tweak-${{ matrix.scheme }}
           path: |
             packages/*.deb
@@ -211,6 +212,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          retention-days: 3
           name: settings-ui-smoke
           path: .build/settings-ui-results/
           if-no-files-found: warn
@@ -243,6 +245,7 @@ jobs:
         run: python3 scripts/verify-package.py jailed
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: gotohp-tweak-jailed
           path: |
             packages/jailed/*.deb
