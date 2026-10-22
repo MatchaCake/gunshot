@@ -36,12 +36,15 @@ jobs:
           .build/bridge-smoke
   package:
     runs-on: macos-15
+    permissions:
+      contents: write # tagged builds upload straight to the GitHub Release
     strategy:
       fail-fast: false
       matrix:
         scheme: [rootless, rootful]
     env:
       THEOS: ${{ github.workspace }}/.theos-sdk
+      RELEASE_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && inputs.release_tag) || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,9 +105,41 @@ jobs:
         run: bash scripts/package.sh '${{ matrix.scheme }}'
       - name: Verify package layout
         run: python3 scripts/verify-package.py '${{ matrix.scheme }}'
+      - name: Upload package to release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp packages/*.deb "gotohp-tweak-${{ matrix.scheme }}.deb"
+          files=("gotohp-tweak-${{ matrix.scheme }}.deb")
+          # Upload straight to the Release instead of Actions artifacts. A Release created here
+          # is a prerelease carrying the gunshot-ci:pending marker; the release job publishes it
+          # after every job has passed. An existing Release keeps its notes and state.
+          for f in "${files[@]}"; do test -s "$f" || { echo "::error::$f is missing or empty"; exit 1; }; done
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # The other build job may create it at the same moment. A tag can only have one
+            # published release, so the losing create fails and the view below confirms it exists.
+            gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" \
+              --notes "Building... <!-- gunshot-ci:pending -->" || true
+            gh release view "$RELEASE_TAG" >/dev/null
+          fi
+          ok=0
+          for i in 1 2 3 4 5; do
+            if gh release upload "$RELEASE_TAG" "${files[@]}" --clobber; then ok=1; break; fi
+            echo "upload failed, retry $i"; sleep 15
+          done
+          [ "$ok" = 1 ] || { echo "::error::release upload failed"; exit 1; }
+          gh release view "$RELEASE_TAG" --json assets -q '.assets[].name'
+      # Non-release builds keep a short-lived copy for testing. Account-wide artifact
+      # storage can run out; that must not fail the build.
       - uses: actions/upload-artifact@v4
+        if: env.RELEASE_TAG == ''
+        continue-on-error: true
         with:
-          retention-days: 3
+          retention-days: 1
           name: gotohp-tweak-${{ matrix.scheme }}
           path: |
             packages/*.deb
@@ -211,16 +246,20 @@ jobs:
         run: bash scripts/test-settings-ui.sh
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
-          retention-days: 3
+          retention-days: 1
           name: settings-ui-smoke
           path: .build/settings-ui-results/
           if-no-files-found: warn
   jailed-build:
     name: package (jailed)
     runs-on: macos-15
+    permissions:
+      contents: write # tagged builds upload straight to the GitHub Release
     env:
       THEOS: ${{ github.workspace }}/.theos-sdk
+      RELEASE_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v') && inputs.release_tag) || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,9 +282,41 @@ jobs:
         run: bash scripts/package.sh jailed
       - name: Verify package layout
         run: python3 scripts/verify-package.py jailed
+      - name: Upload jailed package to release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp packages/jailed/*.deb gotohp-tweak-jailed.deb
+          cp packages/jailed/GunshotJailed.dylib GunshotJailed.dylib
+          cp packages/jailed/ThirdPartyNotices.txt ThirdPartyNotices.txt
+          files=(gotohp-tweak-jailed.deb GunshotJailed.dylib ThirdPartyNotices.txt)
+          # Upload straight to the Release instead of Actions artifacts. A Release created here
+          # is a prerelease carrying the gunshot-ci:pending marker; the release job publishes it
+          # after every job has passed. An existing Release keeps its notes and state.
+          for f in "${files[@]}"; do test -s "$f" || { echo "::error::$f is missing or empty"; exit 1; }; done
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # The other build job may create it at the same moment. A tag can only have one
+            # published release, so the losing create fails and the view below confirms it exists.
+            gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" \
+              --notes "Building... <!-- gunshot-ci:pending -->" || true
+            gh release view "$RELEASE_TAG" >/dev/null
+          fi
+          ok=0
+          for i in 1 2 3 4 5; do
+            if gh release upload "$RELEASE_TAG" "${files[@]}" --clobber; then ok=1; break; fi
+            echo "upload failed, retry $i"; sleep 15
+          done
+          [ "$ok" = 1 ] || { echo "::error::release upload failed"; exit 1; }
+          gh release view "$RELEASE_TAG" --json assets -q '.assets[].name'
       - uses: actions/upload-artifact@v4
+        if: env.RELEASE_TAG == ''
+        continue-on-error: true
         with:
-          retention-days: 3
+          retention-days: 1
           name: gotohp-tweak-jailed
           path: |
             packages/jailed/*.deb
@@ -253,6 +324,9 @@ jobs:
             packages/jailed/ThirdPartyNotices.txt
           if-no-files-found: error
   release:
+    # Build jobs upload their files straight to the Release (no Actions artifacts, so a full
+    # artifact quota cannot block a release). A Release created by this run starts as a
+    # prerelease; once every job has passed, this job checks the asset set and publishes it.
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v'))
     needs: [core, package, jailed-build]
     runs-on: ubuntu-latest
@@ -262,25 +336,25 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Name packages
-        run: |
-          cp artifacts/gotohp-tweak-rootless/*.deb gotohp-tweak-rootless.deb
-          cp artifacts/gotohp-tweak-rootful/*.deb gotohp-tweak-rootful.deb
-          cp artifacts/gotohp-tweak-jailed/*.deb gotohp-tweak-jailed.deb
-          cp artifacts/gotohp-tweak-jailed/GunshotJailed.dylib GunshotJailed.dylib
-          cp artifacts/gotohp-tweak-jailed/ThirdPartyNotices.txt ThirdPartyNotices.txt
-      - name: Publish release assets
+      - name: Verify assets and publish release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          assets=(gotohp-tweak-rootless.deb gotohp-tweak-rootful.deb gotohp-tweak-jailed.deb GunshotJailed.dylib ThirdPartyNotices.txt)
-          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null; then
-            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GH_REPO" --clobber
-          else
-            gh release create "$RELEASE_TAG" "${assets[@]}" --repo "$GH_REPO" --verify-tag --generate-notes
+          set -euo pipefail
+          expected="GunshotJailed.dylib ThirdPartyNotices.txt gotohp-tweak-jailed.deb gotohp-tweak-rootful.deb gotohp-tweak-rootless.deb"
+          actual=$(gh release view "$RELEASE_TAG" --json assets -q '[.assets[].name] | sort | join(" ")')
+          echo "assets: $actual"
+          for f in $expected; do
+            case " $actual " in *" $f "*) ;; *) echo "::error::missing release asset $f"; exit 1 ;; esac
+          done
+          marker=$(gh release view "$RELEASE_TAG" --json body -q '.body' | grep -c 'gunshot-ci:pending' || true)
+          if [ "$marker" != 0 ]; then
+            gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" -q .body > notes.md
+            case "$RELEASE_TAG" in
+              *-*) gh release edit "$RELEASE_TAG" --notes-file notes.md --prerelease ;;
+              *) gh release edit "$RELEASE_TAG" --notes-file notes.md --prerelease=false --latest ;;
+            esac
           fi
+          gh release view "$RELEASE_TAG" --json tagName,isPrerelease,isDraft,url
